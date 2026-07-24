@@ -1,0 +1,298 @@
+---
+title: "Diversity_SVN"
+author: "Rachel Boone"
+date: "2024-10-28"
+output: html_document
+---
+# Diversity (alpha/beta): SVN
+
+## Background
+
+## Packages
+
+```{r Packages}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+#BiocManager::install()
+
+#BiocManager::install("phyloseq")
+library(phyloseq)
+
+#install.packages("tidyverse")
+library(tidyverse)
+
+#install.packages("here")
+library(here)
+
+
+
+
+#BiocManager::install("microbiome")
+library(microbiome) 
+
+#install.packages("vegan")
+library(vegan)
+
+#install.packages("microViz",  repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos")))
+#library(microViz)
+
+
+```
+
+
+## Load data
+
+```{r Loading data}
+#loading data
+
+load(here("results/filtered_dada_2_output_environment.RData"))
+
+```
+
+```{r Sample data to data frame}
+sample_data <- ps_analysis_2@sam_data
+sample_data <- data.frame(sample_data)
+sample_data <- tibble::rownames_to_column(sample_data, var = "Sample.ID")
+
+nrow(sample_data) #237
+
+
+
+```
+
+
+```{r birth outcomes data frame}
+#combining large for gestational age into the "normal" category
+#defining SVN to exclude those with miscarriages etc. 
+sample_data <- sample_data %>% 
+  mutate(Percential_weight.GA_2 = case_when(Percential_weight.GA == "normal" | Percential_weight.GA == "LGA" ~ "Normal", Percential_weight.GA == "SGA" ~ "SGA")) %>% 
+   mutate(SVN = case_when(Percential_weight.GA_2 == "SGA" | Birth_weight_cat == "Low Birth Weight" | GA_birth_binary == "Preterm" ~ "SVN", .default = "Other")) %>% 
+  mutate(Single_outcome_SVN = case_when(Born_Alive == "1" & Percential_weight.GA_2 == "Normal" & Birth_weight_cat == "Normal Weight" & GA_birth_binary == "Term" ~ "Healthy", Born_Alive == "1" & SVN == "SVN" ~ "SVN", .default = "Other"))
+
+
+```
+
+
+```{r}
+richness <- estimate_richness(ps_analysis_2) 
+rownames(richness) <- gsub("\\.", "-", rownames(richness))
+richness <- richness %>% 
+  rownames_to_column(var = "Sample.ID")
+
+evenness <- evenness(ps_analysis_2, index = c("pielou"))
+evenness <- evenness %>% 
+  rownames_to_column(var = "Sample.ID")
+
+
+sample_data_2 <- left_join(sample_data, richness) %>% 
+  left_join(evenness) %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  filter(Twins == 2)
+nrow(sample_data_2) #213
+```
+
+## Alpha Diversity
+
+```{r ALPHA DIVERSITY: RICHNESS}
+
+# "Observed" (the total number of ASVs identified per sample) is used as the measure of richness.
+wilcox.test(Observed ~ Single_outcome_SVN, data = sample_data_2)
+
+# plot
+ggplot(sample_data_2, aes(x = Single_outcome_SVN, y = Observed, color = Single_outcome_SVN)) +
+  geom_boxplot() +
+  geom_point(size = 3) +
+  theme_bw() +
+  labs(x = NULL, y = "Observed", title = "Microbial Richness") +
+  theme(legend.position = "none",
+        strip.background = element_blank(),
+        #aspect.ratio = 1, 
+        plot.title = element_text(hjust = 0.5, size = 20), 
+        axis.text.x = element_text(size = 20), 
+        axis.text.y = element_text(size = 20), 
+        axis.title.x = element_text(size = 20), 
+        axis.title.y = element_text(size = 20),
+        legend.title = element_text(size = 20), 
+        legend.text = element_text(size = 18)) +
+   stat_compare_means(aes(), label.x = 2, label.y = 0.8)
+
+
+#ggsave(here("results/figures/richness-observed_SVN_p-value.png"), width = 8, height = 5, dpi = 300)
+
+```
+
+```{r ALPHA DIVERSITY: EVENESS}
+
+
+# "pielou" (used as the measure of evenness).
+wilcox.test(pielou ~ Single_outcome_SVN, data = sample_data_2)
+
+# plot
+ggplot(sample_data_2, aes(x = Single_outcome_SVN, y = pielou, color = Single_outcome_SVN)) +
+  geom_boxplot() +
+  geom_point(size = 3) +
+  theme_bw() +
+  labs(x = NULL, y = "Pielou Eveness Index", title = "Microbial Evenness") +
+  theme(legend.position = "none",
+        strip.background = element_blank(),
+        #aspect.ratio = 1, 
+        plot.title = element_text(hjust = 0.5, size = 20), 
+        axis.text.x = element_text(size = 20), 
+        axis.text.y = element_text(size = 20), 
+        axis.title.x = element_text(size = 20), 
+        axis.title.y = element_text(size = 20),
+        legend.title = element_text(size = 20), 
+        legend.text = element_text(size = 18)) +
+   stat_compare_means(aes(), label.x = 2, label.y = 0.8)
+
+
+
+#ggsave(here("results/figures/evenness-pielou_SVN_p-value.png"), width = 8, height = 5, dpi = 300)
+
+
+```
+
+
+## Beta Diversity 
+
+```{r BETA DIVERSITY: BRAYS}
+
+sample_data(ps_analysis_2) <- column_to_rownames(sample_data, var = "Sample.ID")
+
+ps_analysis_3 <- ps_analysis_2 %>%
+  subset_samples(Single_outcome_SVN != "Other" & Twins == "2") 
+
+# Set seed for reproducibility.
+#sample(1:10000, 1) 
+set.seed(3754) 
+
+# Ordinate relative abundances using Bray-Curtis Dissimilarity
+ps_analysis_prop <- transform_sample_counts(ps_analysis_3, function(ASV) ASV/sum(ASV))
+#ps_analysis_prop <- ps_filter(ps_analysis_prop, SVN == "Normal" | SVN == "SVN")
+
+ord_nmds_bray <- ordinate(ps_analysis_prop, method = "NMDS", distance = "bray")
+
+# Visualize by Non-metric Multidimensional Scaling (NMDS)
+ordplot_bray <- plot_ordination(ps_analysis_prop, ord_nmds_bray, color = "Single_outcome_SVN") +
+  geom_point(size = 3) +
+  labs(title = "Bray-Curtis Dissimilarity", color = "Group") +
+  #scale_color_manual(values = c("#8080ff", "#ff8080", "#808080" )) +
+  theme_bw() +
+  theme(aspect.ratio = 1, 
+        plot.title = element_text(hjust = 0.5, size = 20), 
+        axis.text.x = element_text(size = 20), 
+        axis.text.y = element_text(size = 20), 
+        axis.title.x = element_text(size = 20), 
+        axis.title.y = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        legend.text = element_text(size = 18)) 
+
+ordplot_bray
+
+
+
+
+#ggsave(here("results/figures/beta-diversity-bc_SVN.png"), width = 5, height = 4, dpi = 300)
+
+meta <- data.frame(sample_data(ps_analysis_prop))
+
+adonis2(
+  distance(ps_analysis_prop, method = "bray") ~ Single_outcome_SVN,
+  data = meta
+)
+
+
+# Add ellipses
+ordplot_bray +
+  stat_ellipse(type = "norm") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 10), 
+        axis.title = element_text(size = 15),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5))  +
+  coord_fixed()+
+  annotate("text", x = 1, y = -1, label = "p = 0.042", color = "black")
+#p=0.042
+```
+
+
+
+## Organize data: Phylum
+NOTE: Many of the functions used are duplicated for the purpose of later graphs being able to be grouped by feature of interest when desired. 
+
+```{r ORGANIZATION OF COMMUNITY COMPOSITION: PHYLUM}
+#merging samples by feature of interest
+merged_ps_phylum_p <- merge_samples(ps_analysis_3, "Single_outcome_SVN")
+
+#agglomerating asvs to desired taxa level
+merged_ps_taxa_1_p <- tax_glom(ps_analysis_3, "Phylum", NArm = TRUE)
+merged_ps_taxa_2_p <- tax_glom(merged_ps_phylum_p, "Phylum", NArm = TRUE)
+
+#calculating relative abundance
+normalized_ps_taxa_relabun_1_p = transform_sample_counts(merged_ps_taxa_1_p, function(OTU) OTU/sum(OTU) * 100)
+normalized_ps_taxa_relabun_2_p = transform_sample_counts(merged_ps_taxa_2_p, function(OTU) OTU/sum(OTU) * 100)
+
+
+#converting to a data.frame
+taxa_relabun_1_p <- psmelt(normalized_ps_taxa_relabun_1_p) 
+taxa_relabun_2_p <- psmelt(normalized_ps_taxa_relabun_2_p) 
+
+
+#converting taxa level of interest to character data type
+taxa_relabun_1_p$Phylum <- as.character(taxa_relabun_1_p$Phylum)
+taxa_relabun_2_p$Phylum <- as.character(taxa_relabun_2_p$Phylum)
+
+
+#Calculating medians of relative abundance across the taxa level of interest
+medians_1_p <- plyr::ddply(taxa_relabun_1_p, ~Phylum, function(x) c(median=median(x$Abundance)))
+medians_2_p <- plyr::ddply(taxa_relabun_2_p, ~Phylum, function(x) c(median=median(x$Abundance)))
+
+
+#identifying taxa of <= 1% relative abundance
+remainder_1_p <- medians_1_p[medians_1_p$median <= 1,]$Phylum
+remainder_2_p <- medians_2_p[medians_2_p$median <= 1,]$Phylum
+
+
+#renaming taxa <= 1% abundance
+taxa_relabun_1_p[taxa_relabun_1_p$Phylum %in% remainder_1_p,]$Phylum <- 'Other <1%'
+taxa_relabun_2_p[taxa_relabun_2_p$Phylum %in% remainder_2_p,]$Phylum <- 'Other <1%'
+
+
+```
+
+
+
+
+
+## Statistics
+
+```{r Statistics}
+
+# Extract p values between groups for each phyla
+phylum_pvals <- list() # Make empty list for p values.
+
+for (x in taxa_relabun_1_p$Phylum) {
+  phylum_pvals[[x]] <- dplyr::filter(taxa_relabun_1, Phylum == x) %>%
+    wilcox.test(Abundance ~ Single_outcome_SVN, data = .) %>%
+    .$p.value
+}
+
+
+# Make a table of p values
+wilcox_phyla <- data.frame(unique(taxa_relabun_1_p$Phylum), 
+                           unlist(phylum_pvals))
+
+wilcox_phyla <- wilcox_phyla %>%
+  dplyr::mutate(p_adjust = p.adjust(wilcox_phyla$unlist.phylum_pvals., 
+                                    method = "fdr")) 
+
+
+#write.csv(wilcox_phyla, 
+          #here("results/tables/phylum_wilcox_SVN.csv"), 
+          #row.names = FALSE)
+
+```
+
+

@@ -1,0 +1,269 @@
+---
+title: "Data-organization_deriving-variables"
+author: "Rachel McMillan"
+date: "2025-10-16"
+output: html_document
+---
+# Data organization
+
+## Background 
+
+Some variables of interest (e.g. BMI, preterm birth, etc.) need to be derived from existing data. In this script, we derive those variables and add them to the meta data file, creating a final meta data file. 
+
+## Packages
+
+```{r Packages}
+
+#"tidyverse" for data organization
+#install.packages("tiderverse")
+library(tidyverse)
+
+
+#"here" for easy locating of files
+#install.packages("here")
+library(here)
+
+```
+
+## Loading in meta data file
+
+```{r Loading in meta data file}
+
+Meta_data_1 <- read.csv(here("SVN_Microbiome_meta-data_curated.csv"))
+
+```
+
+
+## Deriving variables
+
+```{r calculating maternal BMI}
+
+#Calculating BMI of each mother
+Meta_data_1 <- Meta_data_1 %>%
+  mutate(cmtom = Maternal_height/100) %>% 
+  mutate(hightsquare = cmtom*cmtom) %>%
+  mutate(BMI = Maternal_weight/hightsquare) %>% 
+  select(-c(cmtom, hightsquare))
+
+```
+
+```{r transforming units}
+
+#Calculating B12 pmol
+#molar mass of B12: 1355.4g/mole
+#moles = grams x 1 mole/molar mass
+Meta_data_1 <- Meta_data_1 %>%
+  mutate(Vitamin_B12_pmol.mL = Vitamin_B12_pg.mL/1355.4) %>% 
+  mutate(Vitamin_B12_pmol.L = Vitamin_B12_pmol.mL*1000) %>% 
+  select(-c(Vitamin_B12_pmol.mL))
+
+#Calculating RBP4 umol/L
+#molar mass of RBP4: 31 kD = 31000g/mole
+#moles = grams x 1 mole/molar mass
+Meta_data_1 <- Meta_data_1 %>%
+  mutate(RBP4_umol.L = RBP4_ng.ml/31000)
+  
+
+#Calculating Folate nmol/L
+#molar mass of folate: 441.4 g/mol
+#moles = grams x 1 mole/molar mass
+Meta_data_1$Folate_ng.mL <- as.numeric(Meta_data_1$Folate_ng.mL)
+
+Meta_data_1 <- Meta_data_1 %>%
+  mutate(Folate_nmol.mL = Folate_ng.mL/441.4) %>% 
+  mutate(Folate_nmol.L = Folate_nmol.mL*1000) %>% 
+  select(-c(Folate_nmol.mL))
+
+```
+
+```{r Contineous to categorical}
+#Continuous to categorical data  ----
+Meta_data_1 <- Meta_data_1 %>%
+  mutate(BMI_cat = cut(
+    BMI,
+    breaks = c(-Inf, 18.5, 24.99999, 25.0, 30.0, Inf),
+    labels = c("Underweight", "Healthy Weight", "na",  "Overweight", "Obese"),
+    include.lowest = TRUE,
+    right = TRUE)) %>%
+  mutate(Maternal_age_cat = cut(
+    Maternal_age, 
+    breaks = c(-Inf, 18, 35, Inf),
+    labels = c("<18", "18-35", ">35"),
+    include.lowest = TRUE,
+    right = FALSE)) %>%
+  mutate(Maternal_education_cat = cut(
+    Maternal_education,
+    breaks = c(-Inf, 1, 5, 10.1, Inf),
+    labels = c("No Education", "1-5", "6-10",">10"),
+    include.lowest = TRUE,
+    right = TRUE)) %>%
+  mutate(Parity_cat = cut(
+    Parity, 
+    breaks = c(-Inf, 0.99999, 2, Inf),
+    labels = c("0", "1-2", ">2"),
+    include.lowest = TRUE,
+    right = TRUE)) %>%
+  mutate(GA_birth_cat = cut(
+    GA_birth,
+    breaks = c(-Inf, 34, 37, Inf),
+    labels = c("<34", "34-37", ">=37"),
+    include.lowest = TRUE,
+    right = FALSE)) %>%
+  mutate(GA_birth_binary = cut(
+    GA_birth,
+    breaks = c(-Inf, 1, 37, Inf),
+    labels = c("NA", "Preterm", "Term"),
+    include.lowest = TRUE,
+    right = FALSE)) %>%
+  mutate(Birth_weight_cat = cut(
+    Birth_weight,
+    breaks = c(-Inf, 2500, Inf),
+    labels = c("Low Birth Weight", "Normal Weight"),
+    include.lowest = TRUE,
+    right = FALSE)) %>%
+  mutate(inflammation_CRP_cat = cut(
+    CRP_mg.L,
+    breaks = c(-Inf, 8, Inf),
+    labels = c("Normal CRP", "Elevated CRP"),
+    include.lowest = FALSE,
+    right = TRUE)) %>%
+  mutate(inflammation_AGP_cat = cut(
+    Alpha1_AGP_ng.ml,
+    breaks = c(-Inf, 1000000, Inf),
+    labels = c("Normal AGP", "Elevated AGP"),
+    include.lowest = FALSE,
+    right = TRUE)) %>% 
+  mutate(inflammation = if_else(Alpha1_AGP_ng.ml>1000000 | CRP_mg.L>8, "Inflammation", "No Inflammation")) %>% 
+  mutate(inflammation_AGP_cat = cut(
+    Alpha1_AGP_ng.ml,
+    breaks = c(-Inf, 1000000, Inf),
+    labels = c("Normal AGP", "Elevated AGP"),
+    include.lowest = FALSE,
+    right = TRUE)) %>% 
+  mutate(Anemia_Binary = if_else(Hb<11, "Anemia", "No_Anemia")) %>% 
+  mutate(Percential_weight.GA = case_when(
+  GA_birth < 22 & Birth_weight < 481 ~ 'SGA',
+  GA_birth < 22 & Birth_weight >= 481 & Birth_weight <= 578 ~ 'normal',
+  GA_birth < 22 & Birth_weight > 578 ~ 'LGA',
+  GA_birth == 22 & Birth_weight < 481 ~ 'SGA',
+  GA_birth == 22 & Birth_weight >= 481 & Birth_weight <= 578 ~ 'normal',
+  GA_birth == 22 & Birth_weight > 578 ~ 'LGA',
+  GA_birth == 23 & Birth_weight < 538 ~ 'SGA',
+  GA_birth == 23 & Birth_weight >= 538 & Birth_weight <= 658 ~ 'normal',
+  GA_birth == 23 & Birth_weight > 658 ~ 'LGA',
+  GA_birth == 24 & Birth_weight < 602 ~ 'SGA',
+  GA_birth == 24 & Birth_weight >= 602 & Birth_weight <= 751 ~ 'normal',
+  GA_birth == 24 & Birth_weight > 751 ~ 'LGA',
+  GA_birth == 25 & Birth_weight < 674 ~ 'SGA',
+  GA_birth == 25 & Birth_weight >= 674 & Birth_weight <= 858 ~ 'normal',
+  GA_birth == 25 & Birth_weight > 858 ~ 'LGA',
+  GA_birth == 26 & Birth_weight < 757 ~ 'SGA',
+  GA_birth == 26 & Birth_weight >= 757 & Birth_weight <= 980 ~ 'normal',
+  GA_birth == 26 & Birth_weight > 980 ~ 'LGA',
+  GA_birth == 27 & Birth_weight < 849 ~ 'SGA',
+  GA_birth == 27 & Birth_weight >= 849 & Birth_weight <= 1119 ~ 'normal',
+  GA_birth == 27 & Birth_weight > 1119 ~ 'LGA',
+  GA_birth == 28 & Birth_weight < 951 ~ 'SGA',
+  GA_birth == 28 & Birth_weight >= 951 & Birth_weight <= 1276~ 'normal',
+  GA_birth == 28 & Birth_weight > 1276 ~ 'LGA',
+  GA_birth == 29 & Birth_weight < 1065 ~ 'SGA',
+  GA_birth == 29 & Birth_weight >= 1065 & Birth_weight <= 1452 ~ 'normal',
+  GA_birth == 29 & Birth_weight > 1452 ~ 'LGA',
+  GA_birth == 30 & Birth_weight < 1190 ~ 'SGA',
+  GA_birth == 30 & Birth_weight >= 1190 & Birth_weight <= 1647 ~ 'normal',
+  GA_birth == 30 & Birth_weight > 1647 ~ 'LGA',
+  GA_birth == 31 & Birth_weight < 1326 ~ 'SGA',
+  GA_birth == 31 & Birth_weight >= 1326 & Birth_weight <= 1860 ~ 'normal',
+  GA_birth == 31 & Birth_weight > 1860 ~ 'LGA',
+  GA_birth == 32 & Birth_weight < 1473 ~ 'SGA',
+  GA_birth == 32 & Birth_weight >= 1473 & Birth_weight <= 2089 ~ 'normal',
+  GA_birth == 32 & Birth_weight > 2089 ~ 'LGA',
+  GA_birth == 33 & Birth_weight < 1630 ~ 'SGA',
+  GA_birth == 33 & Birth_weight >= 1630 & Birth_weight <= 2332 ~ 'normal',
+  GA_birth == 33 & Birth_weight > 2332 ~ 'LGA',
+  GA_birth == 34 & Birth_weight < 1795 ~ 'SGA',
+  GA_birth == 34 & Birth_weight >= 1795 & Birth_weight <= 2583 ~ 'normal',
+  GA_birth == 34 & Birth_weight > 2583 ~ 'LGA',
+  GA_birth == 35 & Birth_weight < 1967 ~ 'SGA',
+  GA_birth == 35 & Birth_weight >= 1967 & Birth_weight <= 2838 ~ 'normal',
+  GA_birth == 35 & Birth_weight > 2838 ~ 'LGA',
+  GA_birth == 36 & Birth_weight < 2144 ~ 'SGA',
+  GA_birth == 36 & Birth_weight >= 2144 & Birth_weight <= 3089 ~ 'normal',
+  GA_birth == 36 & Birth_weight > 3089 ~ 'LGA',
+  GA_birth == 37 & Birth_weight < 2321 ~ 'SGA',
+  GA_birth == 37 & Birth_weight >= 2321 & Birth_weight <= 3326 ~ 'normal',
+  GA_birth == 37 & Birth_weight > 3326 ~ 'LGA',
+  GA_birth == 38 & Birth_weight < 2495 ~ 'SGA',
+  GA_birth == 38 & Birth_weight >= 2495 & Birth_weight <= 3541 ~ 'normal',
+  GA_birth == 38 & Birth_weight > 3541 ~ 'LGA',
+  GA_birth == 39 & Birth_weight < 2663 ~ 'SGA',
+  GA_birth == 39 & Birth_weight >= 2663 & Birth_weight <= 3722 ~ 'normal',
+  GA_birth == 39 & Birth_weight > 3722 ~ 'LGA',
+  GA_birth == 40 & Birth_weight < 2818 ~ 'SGA',
+  GA_birth == 40 & Birth_weight >= 2818 & Birth_weight <= 3858 ~ 'normal',
+  GA_birth == 40 & Birth_weight > 3858 ~ 'LGA',
+  GA_birth > 40 & Birth_weight < 2818 ~ 'SGA',
+  GA_birth > 40 & Birth_weight >= 2818 & Birth_weight <= 3858 ~ 'normal',
+  GA_birth > 40 & Birth_weight > 3858 ~ 'LGA' )) %>% 
+  mutate(SVN = ifelse(GA_birth_binary == "Preterm" | Birth_weight_cat == "Low Birth Weight" | Percential_weight.GA == "SGA", "SVN", "Normal")) %>% 
+  mutate(miscarriage = ifelse(Birth_outcome == "1", 1, 0)) %>% 
+  mutate(MTP = ifelse(Birth_outcome == "2", 1, 0)) %>% 
+  mutate(Stillbirth = ifelse(Birth_outcome == "3", 1, 0)) %>% 
+  mutate(Born_Alive = ifelse(Birth_outcome == "4" | Birth_outcome == "5", 1, 0)) %>% 
+  mutate(Infant_death = ifelse(Birth_outcome == "4", 1, 0))
+
+#to ensure that these are considered as factors and not as numerical values
+Meta_data_1$miscarriage <- as.factor(Meta_data_1$miscarriage)
+Meta_data_1$MTP <- as.factor(Meta_data_1$MTP)
+Meta_data_1$Stillbirth <- as.factor(Meta_data_1$Stillbirth)
+Meta_data_1$Born_Alive <- as.factor(Meta_data_1$Born_Alive)
+Meta_data_1$Infant_death <- as.factor(Meta_data_1$Infant_death)
+
+
+
+```
+
+```{r Tac}
+#Transforming Tac data from PCR cycle thresholds to positive/negative 
+Meta_data_1 <- Meta_data_1 %>%
+  mutate(EPEC_eae_cat = cut(
+    EPEC_eae,
+    breaks = c(-Inf, 0, 35, Inf),
+    labels = c("Not Available", "Positive", "Negative"),
+    include.lowest = FALSE,
+    right = FALSE)) %>%
+  mutate(EPEC_cat = cut(
+    EPEC,
+    breaks = c(-Inf, 0, 35, Inf),
+    labels = c("Not Available", "Positive", "Negative"),
+    include.lowest = FALSE,
+    right = FALSE)) %>%
+  mutate(STEC_cat = cut(
+    STEC,
+    breaks = c(-Inf, 0, 35, Inf),
+    labels = c("Not Available", "Positive", "Negative"),
+    include.lowest = FALSE,
+    right = FALSE)) %>%
+  mutate(PhHV_amplification_failure = ifelse(PhHV == 40 | PhHV_2 == 40, "Failure", "No Failure")) %>% 
+  mutate(MS2_amplification_failure = ifelse(MS2 == 40 | MS2_2 == 40, "Failure", "No Failure")) %>% 
+  mutate(aEPEC_cat = ifelse(EPEC_eae_cat == "Positive" & STEC_cat == "Negative" & EPEC_cat == "Negative", "Positive", "Negative")) %>% 
+  mutate(tEPEC_cat = ifelse(EPEC_eae_cat == "Positive" & STEC_cat == "Positive" & EPEC_cat == "Negative", "Positive", "Negative"))
+
+
+
+```
+
+
+## Saving file
+```{r Saving file}
+#saving table as a new csv
+write.csv(Meta_data_1, here("SVN_Microbiome_meta-data_curated_full.csv"))
+
+
+```
+
+
+
+
+
+

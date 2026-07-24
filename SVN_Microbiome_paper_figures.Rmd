@@ -1,0 +1,370 @@
+---
+title: "SVN_Microbiome_figures"
+author: "Rachel McMillan"
+date: "2025-10-23"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+#install.packages("ggpubr")
+library(ggpubr)
+
+#install.packages("patchwork")
+library(patchwork)
+
+
+#install.packages("DiagrammeR")
+#install.packages("DiagrammeRsvg")
+#install.packages("rsvg")
+
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+
+```
+
+
+
+#Figure 2
+```{r}
+F2A <- roc_curve(SVN_predictions,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(lty = "dashed", color = "gray", size = 1.5) +
+  geom_path(size = 1.5) +
+  geom_text(data = panel_labels_maternal,
+            aes(x = .4, y = .2, label = "Auc = 0.653"),
+            inherit.aes = FALSE,
+            hjust = 0, vjust = 1) +
+  coord_equal() +
+  theme_bw()
+
+#Auc = 0.653
+
+
+F2B <- ggplot(importance_tax_SVN, aes(x = rank, y = cumulative_importance)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(color = "darkblue") +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  labs(
+    x = "Number of Top Variables",
+    y = "Cumulative Importance",
+    title = "Cumulative Variable Importance"
+  ) +
+  theme_minimal()
+
+
+F2C <- ggplot(SVN_plot_importance_tax_SVN[1:23,], aes(x = Importance, y = reorder(TaxLabel, Importance), fill = Importance)) +
+  geom_col()+
+  theme_bw()+
+  labs(x = "Importance", 
+       y = "Top 23 ASV Predictors (ASV | Family)", 
+       title = "ASVs by Importance")+
+  theme(legend.position = "none",  axis.text.y = element_text(family = "mono", color = "black", face = "bold"))
+
+
+
+F2D <- ggplot(SVN_plot_df_tax_SVN, aes(x = reorder(TaxLabel, Difference), y = Difference, fill = Difference > 0)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = significance), hjust = ifelse(SVN_plot_df_tax_SVN$Difference > 0, -0.2, 1.2)) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
+  labs(title = "Microbiome Relative Abundance",
+       x = "Top 23 ASV Predictors (ASV | Family)",
+       y = "Difference in Relative Abundance") +
+  theme_minimal()+
+  theme(legend.position="none", axis.text.y = element_text(family = "mono", color = "black", face = "bold"))
+
+
+Figure2 <- (F2A + F2B) / free(F2C, side = "l") / free(F2D, side = "l") + 
+  plot_annotation(tag_levels = 'A')
+
+
+print(Figure2)
+
+ggsave("Figure2_plot.png", Figure2, width = 7, height = 10, dpi = 300)
+  
+
+```
+
+
+
+
+
+
+
+
+#Figure 3
+```{r}
+
+F3A <- ggplot(ROC_maternal, aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(lty = "dashed", color = "gray", size = 1.5, ) +
+  geom_path(aes(), size = 1.5) +
+  facet_wrap(~ model, ncol = 1) +
+    geom_text(data = panel_labels_maternal,
+            aes(x = .25, y = .2, label = label, size = .1),
+            inherit.aes = FALSE,
+            hjust = 0, vjust = 1) +
+  coord_equal() +
+  theme_bw() + 
+  theme(legend.position = "none")
+  
+F3B <- ggplot(AGP_plot_df_tax_AGP, aes(x = reorder(TaxLabel, Difference), y = Difference, fill = Difference > 0)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = significance), hjust = ifelse(AGP_plot_df_tax_AGP$Difference > 0, -0.2, 1.2)) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
+  labs(title = "Elevated AGP",
+       x = "Top 30 ASV Predictors (ASV | Family)",
+       y = "Difference in Relative Abundance") +
+  theme_minimal()+
+  theme(legend.position="none", axis.text.y = element_text(family = "mono", color = "black", face = "bold"))
+
+F3C <- ggplot(cal_plot_df_tax_cal, aes(x = reorder(TaxLabel, Difference), y = Difference, fill = Difference > 0)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = significance), hjust = ifelse(cal_plot_df_tax_cal$Difference > 0, -0.2, 1.2)) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
+  labs(title = "Elevated Calprotectin",
+       x = "Top 21 ASV Predictors (ASV | Family)",
+       y = "Difference in Relative Abundance") +
+  theme_minimal()+
+  theme(legend.position="none", axis.text.y = element_text(family = "mono", color = "black", face = "bold"))
+
+designF3 <- c(
+area(1, 1, 5, 1),
+area(1, 2, 3, 3),
+area(4, 2, 5, 3))
+
+Figure3 <- F3A + F3B + F3C + 
+  plot_layout(design = designF3) +
+  plot_annotation(tag_levels = 'A')
+print(Figure3)
+
+ggsave("Figure3_plot.png", Figure3, width = 10, height = 10, dpi = 300)
+
+```
+
+
+
+
+
+
+
+#Figure 4
+```{r}
+
+
+F4 <- ggplot(ROC_SVN, aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(lty = "dashed", color = "gray", size = 1.5) +
+  geom_path(aes(), size = 1.5) +
+  facet_wrap(~ model, ncol = 3) +
+  geom_text(data = panel_labels_SVN,
+            aes(x = .4, y = .2, label = label),
+            inherit.aes = FALSE,
+            hjust = 0, vjust = 1) +
+  coord_equal() +
+  theme_bw() + 
+  theme(legend.position = "none")
+
+
+
+Figure4 <- ggarrange(
+  F4
+)
+
+
+print(Figure4)
+
+ggsave("Figure4_plot.png", Figure4, width = 7, height = 7, dpi = 300)
+
+```
+
+
+
+
+# Figure 1
+```{r}
+
+
+F1 <- grViz("
+digraph consort {
+  graph [layout = dot, rankdir = TB]
+  
+  node [shape = box, style = filled, fillcolor = LightGray, fixedsize=false, fontsize=10,]
+
+  A [label = '  Participants enrolled in registry (n = 1637)  ']
+  B [label = '  Randomly selected in first trimester (n = 463)  ']
+  C [label = '  Provided blood samples (n = 416)  ']
+  
+  D [label = '  Birth outcomes recorded (n = 385)  ']
+  D2 [label = '  Lost to follow up (n = 31)  ']
+  
+  E [label = '  Fecal samples sequenced (n = 367)  ']
+  E2 [label = '  Fecal samples not collected (n = 18)  ']
+  
+  F [label = '  Retained after DADA2 pipeline (n = 237)  ']
+  F2 [label = '  Excluded for sequencing quality  \\n-   Filtered reads <65% input reads  \\n-   Assigned ASVs <50% input reads  \\n   or   \\n-   <20,000 input reads (n = 131) ']
+  
+  G [label = '  Samples included in analysis (n = 213)  ']
+  G2 [label = '  Exclusion due to birth outcome  \\n-   Twins (n = 2)  \\n-   Miscarriage (n = 16)  \\n-   Medically terminated pregnancy (n = 1)  \\n-   Still birth (n = 5)  ']
+  
+  H [label = '  Non-SVN (n = 107)  ']
+  H2 [label = '  SVN (n = 106)  ']
+
+  A -> B
+  B -> C
+  C -> D
+  C -> D2 [dir=none, constraint=false]
+  D -> E
+  D -> E2 [dir=none, constraint=false]
+  E -> F
+  E -> F2 [dir=none, constraint=false]
+  F -> G
+  F -> G2 [dir=none, constraint=false]
+  G -> H
+  G -> H2 
+  
+  // Rank same for side-by-side appearance
+{rank = same; C; D2}
+{rank = same; D; E2}
+{rank = same; E; F2}
+{rank = same; F; G2}
+}
+")
+
+
+
+Figure1 <- export_svg(F1)
+
+
+rsvg_png(charToRaw(Figure1), "Figure1_diagram_revised.png", width = 2400, height = 3600)
+
+
+```
+
+
+
+#Figure S3
+```{r}
+
+FS3A <- ggplot(sample_data_2, aes(x = Single_outcome_SVN, y = Observed, color = Single_outcome_SVN)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("Healthy" = "Non-SVN",
+                              "SVN" = "SVN")) +
+  theme_bw() +
+  labs(x = NULL, y = "Observed", title = "Microbial Richness") +
+  theme(legend.position = "none",
+        strip.background = element_blank()) +
+   stat_compare_means(aes(), label.x = 1.5, label.y = 20)
+  
+FS3B <- ggplot(sample_data_2, aes(x = Single_outcome_SVN, y = pielou, color = Single_outcome_SVN)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("Healthy" = "Non-SVN",
+                              "SVN" = "SVN")) +
+  theme_bw() +
+  labs(x = NULL, y = "Pielou Evenness Index", title = "Microbial Evenness") +
+  theme(legend.position = "none",
+        strip.background = element_blank()) +
+   stat_compare_means(aes(), label.x = 1.5, label.y = 0.4)
+
+FS3C <- ordplot_bray +
+  scale_color_discrete(labels = c("Healthy" = "Non-SVN",
+                                  "SVN" = "SVN")) +
+  stat_ellipse(type = "norm") +
+  theme_bw() +
+  coord_fixed() +
+  annotate("text", x = 0.5, y = -1.25, label = "p = 0.042", color = "black")
+  
+FS3D <- taxa_relabun_2_p %>% 
+  ggplot(aes(x = Sample, y = Abundance, fill = Phylum)) +
+  scale_x_discrete(labels = c("Healthy" = "Non-SVN",
+                              "SVN" = "SVN")) +
+  geom_bar(stat = "identity") +
+  theme_bw()+
+  labs(y = "Relative Abundance", title = "Phylum Relative Abundance")
+  
+FS3E <- ggplot(data = taxa_relabun_1, aes(x = Single_outcome_SVN, y = Abundance)) +
+  geom_boxplot(outlier.shape  = NA) +
+  scale_x_discrete(labels = c("Healthy" = "Non-SVN",
+                              "SVN" = "SVN")) +
+  geom_jitter(aes(color = Single_outcome_SVN), height = 0, width = .2) +
+  labs(x = "", y = "Abundance\n") +
+  facet_wrap(~ Family, scales = "free")+
+  theme_bw()+
+  theme(axis.text.x=element_blank())
+  
+
+FigureS3 <- (FS3A + FS3B) / (FS3C + FS3D) + 
+  plot_annotation(tag_levels = 'A')
+
+
+print(FigureS3)
+
+ggsave("FigureS3_plot_revised.png", FigureS3, width = 10, height = 8, dpi = 300)
+
+
+```
+
+
+#Figure S2
+
+```{r}
+
+FS2A <- ggplot(importance_tax_AGP, aes(x = rank, y = cumulative_importance)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(color = "darkblue") +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  labs(
+    x = "Number of Top Variables",
+    y = "Cumulative Importance",
+    title = "Cumulative Importance (AGP)"
+  ) +
+  theme_minimal()
+  
+FS2B <- ggplot(AGP_plot_importance_tax_AGP[1:30,], aes(x = Importance, y = reorder(TaxLabel, Importance), fill = Importance)) +
+  geom_col()+
+  theme_bw()+
+  labs(x = "Importance", 
+       y = "Top 30 ASV Predictors (ASV | Family)", 
+       title = "AGP: ASVs by Importance")+
+  theme(legend.position = "none", axis.text.y = element_text(family = "mono", color = "black", face = "bold"))
+  
+  
+FS2C <- ggplot(importance_tax_cal, aes(x = rank, y = cumulative_importance)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(color = "darkblue") +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  labs(
+    x = "Number of Top Variables",
+    y = "Cumulative Importance",
+    title = "Cumulative Importance (Calprotectin)"
+  ) +
+  theme_minimal()
+  
+FS2D <- ggplot(cal_plot_importance_tax_cal[1:21,], aes(x = Importance, y = reorder(TaxLabel, Importance), fill = Importance)) +
+  geom_col()+
+  theme_bw()+
+  labs(x = "Importance", 
+       y = "Top 21 ASV Predictors (ASV | Family)", 
+       title = "Calprotectin: ASVs by Importance")+
+  theme(legend.position = "none", axis.text.y = element_text(family = "mono", color = "black", face = "bold"))
+  
+
+
+FigureS2 <- (FS2A + FS2B) / (FS2C + FS2D) + 
+  plot_annotation(tag_levels = 'A')
+
+
+print(FigureS2)
+
+ggsave("FigureS2_plot.png", FigureS2, width = 10, height = 8, dpi = 300)
+```
+
+
+
+
+
+

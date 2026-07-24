@@ -1,0 +1,810 @@
+---
+title: "DADA2_Batches1-4"
+author: "Rachel McMillan"
+date: "2025-10-16"
+output: html_document
+---
+
+# DADA2 Pipeline for Batches 1-4
+
+## Background
+
+### Collection of samples
+Women in the Kalihati distric of Bangladesh were recruited during the first trimester of pregnancy. Fecal samples were collected at this time (or as soon as was possible). 
+
+### Sequencing methodology
+
+Protocol used: The Earth Microbiome Project (EMP) 16S Illumina Amplicon Protocol for paired-end 16S sequencing on the Illumina MiSeq system. 
+
+Protocol link: https://www.protocols.io/view/emp-16s-illumina-amplicon-protocol-kqdg3dzzl25z/v2
+
+Primers: They used primers 515F-806R to target the V4 region of the 16S SSU rRNA, with the forward primer barcoded. Also they included 15% PhiX as a control.
+
+Due to the number of samples, sequencing was conducted in four batches. 
+
+
+### Sequence processing methodology
+
+Here we use the DADA2 pipeline to obtain a sequencing table of ASVs from the original reads. 
+
+DADA2 tutorial: https://benjjneb.github.io/dada2/tutorial_1_8.html
+
+Due to the number of samples, sequencing was conducted in four batches. The DADA2 pipeline will be used for each batch separately, combined, then taxonomy assigned. 
+
+
+## Package installation and loading
+
+```{r Packages}
+
+#"DADA2" for sequence processing
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#install.packages("BiocManager")
+#BiocManager::install("DADA2", version = "3.9")
+library(dada2)
+packageVersion("dada2")
+
+
+
+#"here" for easily locating files
+
+#install.packages("here")
+library(here)
+packageVersion("here")
+
+
+
+#"tidyverse" for data organization
+
+#install.packages("tidyverse")
+library(tidyverse)
+packageVersion("tidyverse")
+
+```
+
+## Sequence processing
+
+Due to the number of samples, sequencing was conducted in four batches. The DADA2 pipeline will be use for each batch separately, combined, then taxonomy assigned. 
+
+### Batch 1
+
+```{r Batch 1 reading in data}
+#Reading and assigning data
+
+path_1 <- here("Batch_1") 
+
+list.files(path_1)
+
+fnFs_1 <- sort(list.files(path_1, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs_1 <- sort(list.files(path_1, pattern="_R2_001.fastq", full.names = TRUE))
+
+sample.names_1 <- sapply(strsplit(basename(fnFs_1), "_"), `[`, 1)
+
+```
+
+
+```{r Batch 1 data inspection and trimming}
+#Data inspection and trimming
+
+#forward reads
+plotQualityProfile(fnFs_1, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_1_forward_plot.png"))
+
+#reverse reads
+plotQualityProfile(fnRs_1, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_1_reverse_plot.png"))
+
+
+
+# Place filtered files in filtered/ subdirectory
+filtFs_1 <- file.path(path_1, "filtered", paste0(sample.names_1, "_F_filt.fastq.gz"))
+filtRs_1 <- file.path(path_1, "filtered", paste0(sample.names_1, "_R_filt.fastq.gz"))
+
+
+#forward primer is 18 + 12
+#reverse primer is 20
+
+out_1 <- filterAndTrim(fnFs_1, 
+                       filtFs_1, 
+                       fnRs_1, 
+                       filtRs_1,
+                       truncLen=c(200,175), 
+                       trimLeft = c(30, 40),
+                       maxN=0, 
+                       maxEE=c(2,2), 
+                       truncQ=2, 
+                       rm.phix=TRUE,
+                       compress=TRUE,
+                       multithread=FALSE)
+
+head(out_1)
+
+
+
+
+```
+
+
+```{r Batch 1 error rates}
+# Set seed for reproducibility
+#sample(1:10000, 1)
+set.seed(4194)
+
+
+errF_1 <- learnErrors(filtFs_1, multithread=TRUE)
+
+errR_1 <- learnErrors(filtRs_1, multithread=TRUE)
+
+
+plotErrors(errF_1, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_forward_reads.png"), width = 4, height = 4)
+
+plotErrors(errR_1, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_reverse_reads.png"), width = 4, height = 4)
+
+
+
+```
+
+
+```{r Batch 1 dereplication}
+#Dereplication
+derepFs_1 <- derepFastq(filtFs_1, verbose=TRUE)
+derepRs_1 <- derepFastq(filtRs_1, verbose=TRUE)
+
+# Name the derep-class objects by the sample names
+names(derepFs_1) <- sample.names_1
+names(derepRs_1) <- sample.names_1
+
+```
+
+
+```{r Batch 1 sample inference}
+#sample Inference
+
+dadaFs_1 <- dada(derepFs_1, err=errF_1, multithread=TRUE)
+
+dadaRs_1 <- dada(derepRs_1, err=errR_1, multithread=TRUE)
+
+dadaFs_1[[1]]
+```
+
+
+```{r Batch 1 merging paired reads}
+#Merging paired reads
+
+mergers_1 <- mergePairs(dadaFs_1, derepFs_1, dadaRs_1, derepRs_1, verbose=TRUE)
+
+head(mergers_1[[1]])
+```
+
+
+```{r Batch 1 sequence table}
+#constructing sequence table-
+seqtab_1 <- makeSequenceTable(mergers_1)
+
+dim(seqtab_1)
+
+table(nchar(getSequences(seqtab_1)))
+
+jpeg(file= here("Batch_1_sequence_length_1.jpeg"),
+    width=600, height=600)
+Batch_1_sequence_length_1 <- hist(nchar(getSequences(seqtab_1)))
+dev.off()
+
+
+#filtering for the correct length of sequence
+
+seqtab2_1 <-seqtab_1[,nchar(colnames(seqtab_1))%in% seq(180, 184)]
+dim(seqtab2_1)
+table(nchar(getSequences(seqtab2_1)))
+jpeg(file= here("Batch_1_sequence_length_2.jpeg"),
+     width=600, height=600)
+Batch_1_sequence_length_2 <- hist(nchar(getSequences(seqtab2_1)))
+dev.off()
+```
+
+
+```{r Batch 1 chimeras}
+#removing chimeras
+seqtab.nochim_1 <- removeBimeraDenovo(seqtab2_1, method="consensus", multithread=TRUE, verbose=TRUE)
+
+dim(seqtab.nochim_1)
+
+sum(seqtab.nochim_1)/sum(seqtab2_1)
+
+```
+
+
+```{r Batch 1 tracking reads}
+#tracking reads through the pipeline
+
+getN_1 <- function(x) sum(getUniques(x))
+track_1 <- cbind(out_1, sapply(dadaFs_1, getN_1), sapply(dadaRs_1, getN_1), sapply(mergers_1, getN_1), rowSums(seqtab.nochim_1))
+
+colnames(track_1) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track_1) <- sample.names_1
+head(track_1)
+Batch_1_track <- track_1 %>% as.data.frame() %>% mutate(Percent_input = nonchim/input*100)
+
+write.csv(Batch_1_track, here("tables/Batch_1_track.csv"))
+
+```
+
+
+```{r Batch 1 removing unneeded environment}
+rm(list=ls()[! ls() %in% c("sample.names_1","seqtab.nochim_1")])
+```
+
+
+
+### Batch 2
+```{r Batch 2 reading in data}
+#Reading and assigning data
+
+path_2 <- here("Batch_2") 
+
+list.files(path_2)
+
+fnFs_2 <- sort(list.files(path_2, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs_2 <- sort(list.files(path_2, pattern="_R2_001.fastq", full.names = TRUE))
+
+sample.names_2 <- sapply(strsplit(basename(fnFs_2), "_"), `[`, 1)
+
+
+```
+
+```{r Batch 2 data inspection and trimming}
+#Data inspection and trimming
+
+#forward reads
+#plotQualityProfile(fnFs_1[1:2])
+plotQualityProfile(fnFs_2, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_2_forward_plot.png"))
+
+#reverse reads
+#plotQualityProfile(fnRs_2[1:2])
+plotQualityProfile(fnRs_2, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_2_reverse_plot.png"))
+
+
+
+# Place filtered files in filtered/ subdirectory
+filtFs_2 <- file.path(path_2, "filtered", paste0(sample.names_2, "_F_filt.fastq.gz"))
+filtRs_2 <- file.path(path_2, "filtered", paste0(sample.names_2, "_R_filt.fastq.gz"))
+
+
+#forward primer is 18 + 12
+#reverse primer is 20
+
+out_2 <- filterAndTrim(fnFs_2, 
+                       filtFs_2, 
+                       fnRs_2, 
+                       filtRs_2, 
+                       truncLen=c(200,160), 
+                       trimLeft = c(30, 40),
+                       maxN=0, 
+                       maxEE=c(3,3), 
+                       truncQ=2, 
+                       rm.phix=TRUE,
+                       compress=TRUE, 
+                       multithread=FALSE)
+
+
+head(out_2)
+```
+
+```{r Batch 2 error rates}
+# Set seed for reproducibility
+#sample(1:10000, 1)
+set.seed(2037)
+
+
+errF_2 <- learnErrors(filtFs_2, multithread=TRUE)
+
+errR_2 <- learnErrors(filtRs_2, multithread=TRUE)
+
+
+plotErrors(errF_2, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_forward_reads_2.png"), width = 4, height = 4)
+
+plotErrors(errR_2, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_reverse_reads_2.png"), width = 4, height = 4)
+
+```
+
+
+```{r Batch 2 dereplication}
+#Dereplication
+derepFs_2 <- derepFastq(filtFs_2, verbose=TRUE)
+derepRs_2 <- derepFastq(filtRs_2, verbose=TRUE)
+
+# Name the derep-class objects by the sample names
+names(derepFs_2) <- sample.names_2
+names(derepRs_2) <- sample.names_2
+
+```
+
+
+```{r Batch 2 sample inference}
+#sample Inference
+
+dadaFs_2 <- dada(derepFs_2, err=errF_2, multithread=TRUE)
+
+dadaRs_2 <- dada(derepRs_2, err=errR_2, multithread=TRUE)
+
+dadaFs_2[[1]]
+```
+
+
+```{r Batch 2 merging paired reads}
+#Merging paired reads
+
+mergers_2 <- mergePairs(dadaFs_2, derepFs_2, dadaRs_2, derepRs_2, verbose=TRUE)
+
+head(mergers_2[[1]])
+```
+
+
+```{r Batch 2 sequence table}
+#constructing sequence table-
+seqtab_2 <- makeSequenceTable(mergers_2)
+
+dim(seqtab_2)
+
+table(nchar(getSequences(seqtab_2)))
+
+jpeg(file= here("Batch_2_sequence_length_1.jpeg"),
+    width=600, height=600)
+Batch_2_sequence_length_1 <- hist(nchar(getSequences(seqtab_2)))
+dev.off()
+
+
+#filtering for the correct length of sequence
+
+seqtab2_2 <-seqtab_2[,nchar(colnames(seqtab_2))%in% seq(180, 184)]
+dim(seqtab2_2)
+table(nchar(getSequences(seqtab2_2)))
+jpeg(file= here("Batch_2_sequence_length_2.jpeg"),
+     width=600, height=600)
+Batch_2_sequence_length_2 <- hist(nchar(getSequences(seqtab2_2)))
+dev.off()
+```
+
+
+```{r Batch 2 chimeras}
+#removing chimeras
+seqtab.nochim_2 <- removeBimeraDenovo(seqtab2_2, method="consensus", multithread=TRUE, verbose=TRUE)
+
+dim(seqtab.nochim_2)
+
+sum(seqtab.nochim_2)/sum(seqtab2_2)
+
+```
+
+
+```{r Batch 2 tracking reads}
+#tracking reads through the pipeline
+
+getN_2 <- function(x) sum(getUniques(x))
+track_2 <- cbind(out_2, sapply(dadaFs_2, getN_2), sapply(dadaRs_2, getN_2), sapply(mergers_2, getN_2), rowSums(seqtab.nochim_2))
+
+colnames(track_2) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track_2) <- sample.names_2
+head(track_2)
+Batch_2_track <- track_2 %>% as.data.frame() %>% mutate(Percent_input = nonchim/input*100)
+
+write.csv(Batch_2_track, here("tables/Batch_2_track.csv"))
+
+```
+
+
+```{r Batch 2 removing unneeded environment}
+rm(list=ls()[! ls() %in% c("sample.names_2","seqtab.nochim_2", "sample.names_1","seqtab.nochim_1")])
+```
+
+
+### Batch 3
+```{r Batch 3 reading in data}
+#Reading and assigning data
+
+path_3 <- here("Batch_3") 
+
+list.files(path_3)
+
+fnFs_3 <- sort(list.files(path_3, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs_3 <- sort(list.files(path_3, pattern="_R2_001.fastq", full.names = TRUE))
+
+sample.names_3 <- sapply(strsplit(basename(fnFs_3), "_"), `[`, 1)
+
+
+```
+
+```{r Batch 3 data inspection and trimming}
+#Data inspection and trimming
+
+#forward reads
+#plotQualityProfile(fnFs_1[1:2])
+plotQualityProfile(fnFs_3, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_3_forward_plot.png"))
+
+#reverse reads
+#plotQualityProfile(fnRs_3[1:2])
+plotQualityProfile(fnRs_3, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_3_reverse_plot.png"))
+
+
+
+# Place filtered files in filtered/ subdirectory
+filtFs_3 <- file.path(path_3, "filtered", paste0(sample.names_3, "_F_filt.fastq.gz"))
+filtRs_3 <- file.path(path_3, "filtered", paste0(sample.names_3, "_R_filt.fastq.gz"))
+
+
+#forward primer is 18 + 12
+#reverse primer is 20
+
+out_3 <- filterAndTrim(fnFs_3, 
+                       filtFs_3, 
+                       fnRs_3, 
+                       filtRs_3, 
+                       truncLen=c(185,170), 
+                       trimLeft = c(30, 40),
+                       maxN=0, 
+                       maxEE=c(2,3), 
+                       truncQ=2, 
+                       rm.phix=TRUE,
+                       compress=TRUE, 
+                       multithread=FALSE)
+
+
+head(out_3)
+```
+
+```{r Batch 3 error rates}
+# Set seed for reproducibility
+#sample(1:10000, 1)
+set.seed(2127)
+
+
+errF_3 <- learnErrors(filtFs_3, multithread=TRUE)
+
+errR_3 <- learnErrors(filtRs_3, multithread=TRUE)
+
+
+plotErrors(errF_3, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_forward_reads_3.png"), width = 4, height = 4)
+
+plotErrors(errR_3, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_reverse_reads_3.png"), width = 4, height = 4)
+
+```
+
+
+```{r Batch 3 dereplication}
+#Dereplication
+derepFs_3 <- derepFastq(filtFs_3, verbose=TRUE)
+derepRs_3 <- derepFastq(filtRs_3, verbose=TRUE)
+
+# Name the derep-class objects by the sample names
+names(derepFs_3) <- sample.names_3
+names(derepRs_3) <- sample.names_3
+
+```
+
+
+```{r Batch 3 sample inference}
+#sample Inference
+
+dadaFs_3 <- dada(derepFs_3, err=errF_3, multithread=TRUE)
+
+dadaRs_3 <- dada(derepRs_3, err=errR_3, multithread=TRUE)
+
+dadaFs_3[[1]]
+```
+
+
+```{r Batch 3 merging paired reads}
+#Merging paired reads
+
+mergers_3 <- mergePairs(dadaFs_3, derepFs_3, dadaRs_3, derepRs_3, verbose=TRUE)
+
+head(mergers_3[[1]])
+```
+
+
+```{r Batch 3 sequence table}
+#constructing sequence table-
+seqtab_3 <- makeSequenceTable(mergers_3)
+
+dim(seqtab_3)
+
+table(nchar(getSequences(seqtab_3)))
+
+jpeg(file= here("Batch_3_sequence_length_1.jpeg"),
+    width=600, height=600)
+Batch_3_sequence_length_1 <- hist(nchar(getSequences(seqtab_3)))
+dev.off()
+
+
+#filtering for the correct length of sequence
+
+seqtab2_3 <-seqtab_3[,nchar(colnames(seqtab_3))%in% seq(180, 184)]
+dim(seqtab2_3)
+table(nchar(getSequences(seqtab2_3)))
+jpeg(file= here("Batch_3_sequence_length_2.jpeg"),
+     width=600, height=600)
+Batch_3_sequence_length_2 <- hist(nchar(getSequences(seqtab2_3)))
+dev.off()
+```
+
+
+```{r Batch 3 chimeras}
+#removing chimeras
+seqtab.nochim_3 <- removeBimeraDenovo(seqtab2_3, method="consensus", multithread=TRUE, verbose=TRUE)
+
+dim(seqtab.nochim_3)
+
+sum(seqtab.nochim_3)/sum(seqtab2_3)
+
+```
+
+
+```{r Batch 3 tracking reads}
+#tracking reads through the pipeline
+
+getN_3 <- function(x) sum(getUniques(x))
+track_3 <- cbind(out_3, sapply(dadaFs_3, getN_3), sapply(dadaRs_3, getN_3), sapply(mergers_3, getN_3), rowSums(seqtab.nochim_3))
+
+colnames(track_3) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track_3) <- sample.names_3
+head(track_3)
+Batch_3_track <- track_3 %>% as.data.frame() %>% mutate(Percent_input = nonchim/input*100)
+
+write.csv(Batch_3_track, here("tables/Batch_3_track.csv"))
+
+```
+
+
+```{r Batch 3 removing unneeded environment}
+rm(list=ls()[! ls() %in% c("sample.names_3","seqtab.nochim_3", "sample.names_2","seqtab.nochim_2", "sample.names_1","seqtab.nochim_1")])
+```
+
+
+
+### Batch 4
+```{r Batch 4 reading in data}
+#Reading and assigning data
+
+path_4 <- here("Batch_4") 
+
+list.files(path_4)
+
+fnFs_4 <- sort(list.files(path_4, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs_4 <- sort(list.files(path_4, pattern="_R2_001.fastq", full.names = TRUE))
+
+sample.names_4 <- sapply(strsplit(basename(fnFs_4), "_"), `[`, 1)
+
+
+```
+
+```{r Batch 4 data inspection and trimming}
+#Data inspection and trimming
+
+#forward reads
+#plotQualityProfile(fnFs_1[1:2])
+plotQualityProfile(fnFs_4, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_4_forward_plot.png"))
+
+#reverse reads
+#plotQualityProfile(fnRs_4[1:2])
+plotQualityProfile(fnRs_4, aggregate = TRUE)
+ggsave(filename = here("plot/Batch_4_reverse_plot.png"))
+
+
+
+# Place filtered files in filtered/ subdirectory
+filtFs_4 <- file.path(path_4, "filtered", paste0(sample.names_4, "_F_filt.fastq.gz"))
+filtRs_4 <- file.path(path_4, "filtered", paste0(sample.names_4, "_R_filt.fastq.gz"))
+
+
+#forward primer is 18 + 12
+#reverse primer is 20
+
+out_4 <- filterAndTrim(fnFs_4, 
+                        filtFs_4, 
+                        fnRs_4, 
+                        filtRs_4, 
+                        truncLen=c(190,165), 
+                        trimLeft = c(30, 40),
+                        maxN=0, 
+                        maxEE=c(3,4), 
+                        truncQ=2, 
+                        rm.phix=TRUE,
+                        compress=TRUE, 
+                        multithread=FALSE)
+
+
+head(out_4)
+```
+
+```{r Batch 4 error rates}
+# Set seed for reproducibility
+#sample(1:10000, 1)
+set.seed(9245)
+
+
+errF_4 <- learnErrors(filtFs_4, multithread=TRUE)
+
+errR_4 <- learnErrors(filtRs_4, multithread=TRUE)
+
+
+plotErrors(errF_4, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_forward_reads_4.png"), width = 4, height = 4)
+
+plotErrors(errR_4, nominalQ = TRUE)
+ggsave(here("plot/Error_Rates_reverse_reads_4.png"), width = 4, height = 4)
+
+```
+
+
+```{r Batch 4 dereplication}
+#Dereplication
+derepFs_4 <- derepFastq(filtFs_4, verbose=TRUE)
+derepRs_4 <- derepFastq(filtRs_4, verbose=TRUE)
+
+# Name the derep-class objects by the sample names
+names(derepFs_4) <- sample.names_4
+names(derepRs_4) <- sample.names_4
+
+```
+
+
+```{r Batch 4 sample inference}
+#sample Inference
+
+dadaFs_4 <- dada(derepFs_4, err=errF_4, multithread=TRUE)
+
+dadaRs_4 <- dada(derepRs_4, err=errR_4, multithread=TRUE)
+
+dadaFs_4[[1]]
+```
+
+
+```{r Batch 4 merging paired reads}
+#Merging paired reads
+
+mergers_4 <- mergePairs(dadaFs_4, derepFs_4, dadaRs_4, derepRs_4, verbose=TRUE)
+
+head(mergers_4[[1]])
+```
+
+
+```{r Batch 4 sequence table}
+#constructing sequence table-
+seqtab_4 <- makeSequenceTable(mergers_4)
+
+dim(seqtab_4)
+
+table(nchar(getSequences(seqtab_4)))
+
+jpeg(file= here("Batch_4_sequence_length_1.jpeg"),
+    width=600, height=600)
+Batch_4_sequence_length_1 <- hist(nchar(getSequences(seqtab_4)))
+dev.off()
+
+
+#filtering for the correct length of sequence
+
+seqtab2_4 <-seqtab_4[,nchar(colnames(seqtab_4))%in% seq(180, 184)]
+dim(seqtab2_4)
+table(nchar(getSequences(seqtab2_4)))
+jpeg(file= here("Batch_4_sequence_length_2.jpeg"),
+     width=600, height=600)
+Batch_4_sequence_length_2 <- hist(nchar(getSequences(seqtab2_4)))
+dev.off()
+```
+
+
+```{r Batch 4 chimeras}
+#removing chimeras
+seqtab.nochim_4 <- removeBimeraDenovo(seqtab2_4, method="consensus", multithread=TRUE, verbose=TRUE)
+
+dim(seqtab.nochim_4)
+
+sum(seqtab.nochim_4)/sum(seqtab2_4)
+
+```
+
+
+```{r Batch 4 tracking reads}
+#tracking reads through the pipeline
+
+getN_4 <- function(x) sum(getUniques(x))
+track_4 <- cbind(out_4, sapply(dadaFs_4, getN_4), sapply(dadaRs_4, getN_4), sapply(mergers_4, getN_4), rowSums(seqtab.nochim_4))
+
+colnames(track_4) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track_4) <- sample.names_4
+head(track_4)
+Batch_4_track <- track_4 %>% as.data.frame() %>% mutate(Percent_input = nonchim/input*100)
+
+write.csv(Batch_4_track, here("tables/Batch_4_track.csv"))
+
+```
+
+
+```{r Batch 4 removing unneeded environment}
+rm(list=ls()[! ls() %in% c("sample.names_4","seqtab.nochim_4","sample.names_3","seqtab.nochim_3", "sample.names_2","seqtab.nochim_2", "sample.names_1","seqtab.nochim_1")])
+```
+
+### Merging sequence tables
+
+```{r Merging sequence tables}
+
+merge_tables_all_batches <- mergeSequenceTables(seqtab.nochim_1, seqtab.nochim_2, seqtab.nochim_3, seqtab.nochim_4, repeats = "sum")
+
+```
+
+```{r Removing unneeded environment}
+
+rm(sample.names_4,seqtab.nochim_4,sample.names_3,seqtab.nochim_3, sample.names_2,seqtab.nochim_2, sample.names_1,seqtab.nochim_1)
+
+```
+
+
+
+
+
+
+## Assigning Taxonomy
+
+To assign taxonomy, the silva library will be used. 
+
+```{r Assigning taxonomy}
+All_Batches_taxa <- assignTaxonomy(merge_tables_all_batches, here("silva_nr99_v138.1_train_set.fa/silva_nr99_v138.1_train_set.fa"), multithread=TRUE)
+
+All_Batches_taxa <- addSpecies(All_Batches_taxa, "silva_species_assignment_v138.1.fa/silva_species_assignment_v138.1.fa")
+
+
+
+
+
+#All_Batches_taxa <- All_Batches_taxa # Removing sequence rownames for display only
+#rownames(All_Batches_taxa) <- NULL
+#head(All_Batches_taxa)
+```
+
+
+
+
+
+
+
+
+
+
+## Summary
+
+At this point, all batches have been through the DADA2 pipeline and have been merged together. Taxonomy has been assigned, and all objects, formulas, etc. that are not needed for future steps have been removed.Some tables have been retained for future reference.
+
+For future steps, load the current environment.
+
+```{r Saving environment}
+
+save.image(here("results/taxa-table_environment.RData"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

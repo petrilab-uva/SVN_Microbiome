@@ -1,0 +1,3513 @@
+---
+title: "SVN_Microbiome_Random-Forests"
+author: "Rachel McMillan"
+date: "2025-10-16"
+output: html_document
+---
+
+#Background
+This contains many random forest models. After the "set up" section is run, each model should be able to be run independently without running all other models. As such, the same seed is set in multiple places throughout the script so that each section is reproducible. 
+
+#set up
+
+## Packages
+
+```{r Packages}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+#BiocManager::install()
+
+#"phyloseq" for handling phylseq objects
+#BiocManager::install("phyloseq")
+library(phyloseq)
+
+#"tidyverse" for data organization
+#install.packages("tidyverse")
+library(tidyverse)
+
+#"here" for easily locating files
+#install.packages("here")
+library(here)
+
+#"tidymodels" for random forest models
+#install.packages("tidymodels")
+library(tidymodels)
+
+#"vip" for identifying most important predictors of random forest models
+#install.packages("vip")
+library(vip)
+
+#"labdsv" for hellinger formula
+#install.packages("labdsv")
+library(labdsv)
+
+#"pRPC" for ROC curves
+#install.packages("pROC")
+library(pROC)
+```
+
+## Load data
+```{r Loading data}
+#loading data
+
+load(here("results/filtered_dada_2_output_environment.RData"))
+
+```
+
+
+## Data organization
+### Extracting information into data frames
+
+```{r Sample data to data frame}
+sample_data <- ps_analysis_2@sam_data
+sample_data <- data.frame(sample_ata)
+sample_data <- tibble::rownames_to_column(sample_data, var = "Sample.ID")
+
+nrow(sample_data) #237
+
+#filtering out twins
+sample_data <- sample_data %>% 
+  filter(Twins == 2)
+nrow(sample_data) #235
+
+```
+
+```{r ASVs to data frame}
+# Extract ASV information.
+ASVs <- data.frame(ps_analysis_2@otu_table)
+
+
+#Perform Hellinger data transformation (Hdt) transformation on ASVs.
+ASVs_Hdt <- as.data.frame(labdsv::hellinger(ASVs))
+
+
+#Removing ASVs in less than 10% of samples
+ASVs_Hdt_10 <- ASVs_Hdt %>% 
+  keep(~ (sum(. <= 0) / length(.)) < 0.9)
+
+ASVs_Hdt_10 <- tibble::rownames_to_column(ASVs_Hdt_10, var = "Sample.ID")
+
+
+```
+
+### Seperating/combining information into data frames based on categories
+
+```{r birth outcomes data frame}
+#combining large for gestational age into the "normal" category
+#defining SVN to exclude those with miscarriages etc. 
+Birth_outcomes <- select(sample_data, Sample.ID, MTP, miscarriage, Stillbirth, Born_Alive, Infant_death, Percential_weight.GA, Birth_weight_cat, GA_birth_binary, GA_birth, Birth_weight) %>% 
+  mutate(Percential_weight.GA_2 = case_when(Percential_weight.GA == "normal" | Percential_weight.GA == "LGA" ~ "Normal", Percential_weight.GA == "SGA" ~ "SGA")) %>% 
+   mutate(SVN = case_when(Percential_weight.GA_2 == "SGA" | Birth_weight_cat == "Low Birth Weight" | GA_birth_binary == "Preterm" ~ "SVN", .default = "Other")) %>% 
+  mutate(Single_outcome_SVN = case_when(Born_Alive == "1" & Percential_weight.GA_2 == "Normal" & Birth_weight_cat == "Normal Weight" & GA_birth_binary == "Term" ~ "Healthy", Born_Alive == "1" & SVN == "SVN" ~ "SVN", .default = "Other"))
+
+
+```
+
+
+
+# RF models: microbiome ASVs as predictors
+
+## SVN
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+SVN_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN <- rsample::initial_split(SVN_rf_df, prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN <- rsample::training(Data_split_SVN) 
+Data_test_SVN <- rsample::testing(Data_split_SVN)
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN <- rsample::bootstraps(Data_train_SVN, strata = Single_outcome_SVN)
+
+Data_folds_SVN
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SO_SVN_2)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model. 
+ranger_recipe_SVN <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN)%>% 
+  step_novel() 
+
+ranger_spec_SVN <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN) %>% 
+  add_model(ranger_spec_SVN) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ranger_tune_SVN <-
+  tune_grid(ranger_workflow_SVN, resamples = Data_folds_SVN, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter  
+show_best(ranger_tune_SVN, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC 
+final_rf_SVN <- ranger_workflow_SVN %>% 
+  finalize_workflow(select_best(ranger_tune_SVN))
+
+final_rf_SVN
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587)
+
+Data_fit_SVN <- last_fit(final_rf_SVN, Data_split_SVN)
+
+Data_fit_SVN
+
+```
+#### Outcomes
+
+```{r}
+#Showing metrics
+
+collect_metrics(Data_fit_SVN)
+
+#the metrics from the best model using the training set
+show_best(ranger_tune_SVN, metric = "accuracy")  
+show_best(ranger_tune_SVN, metric = "roc_auc")  
+show_best(ranger_tune_SVN, metric = "brier_class") 
+
+#graphing roc curve
+SVN_predictions <- collect_predictions(Data_fit_SVN)
+
+roc_curve(SVN_predictions,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw() +
+  theme( axis.title.x = element_text(size = 20), axis.title.y = element_text(size = 20))
+
+```
+
+```{r Best Predictors}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+
+#running the same model as before but so that the importance will be calculated
+ranger_spec_SVNb <- ranger_spec_SVN %>% 
+  finalize_model(select_best(ranger_tune_SVN)) %>% 
+  set_engine("ranger", importance = "permutation")
+
+ranger_workflow_SVNb <- workflow() %>% 
+  add_recipe(ranger_recipe_SVN) %>% 
+  add_model(ranger_spec_SVNb) %>% 
+  fit(Data_train_SVN) %>% 
+  pull_workflow_fit()
+
+ranger_workflow_SVNb %>%  vip()
+
+
+importance_SVN <- ranger_workflow_SVNb %>% vi()
+
+
+
+```
+
+```{r Viewing best predictors with taxonomy}
+
+#importance of each ASV predictor into data frame
+importance_SVN <- ranger_workflow_SVNb %>% vi()
+
+
+# Add taxonomic assignments to importance rankings.
+tax_SVN <- data.frame(ps_analysis_2@tax_table)
+tax_SVN <- tibble::rownames_to_column(tax_SVN, var = "ASV")
+tax_SVN <- tax_SVN %>% rename(Variable = ASV)
+
+importance_tax_SVN <- dplyr::left_join(importance_SVN, tax_SVN, by = "Variable")
+
+#removing all importance values less than 0.
+importance_tax_SVN <- importance_tax_SVN %>%
+  mutate(
+    Importance = pmax(Importance, 0)  # clip negatives to zero
+  ) %>%
+  arrange(desc(Importance))
+
+#calculating the cumulative of the importance score
+total_importance_SVN <- sum(importance_tax_SVN$Importance)
+
+
+#calculating cumulative importance for each asv (by importance ranking) and percent of total immportance
+importance_tax_SVN <- importance_tax_SVN %>%
+  mutate(
+    cumulative_raw = cumsum(Importance),
+    cumulative_importance = cumulative_raw / total_importance_SVN,
+    importance_percent = Importance / total_importance_SVN,
+    rank = row_number()
+  )
+
+max(importance_tax_SVN$cumulative_importance)
+
+importance_tax_SVN$Name <- paste(importance_tax_SVN$Variable, ",", importance_tax_SVN$Family)
+
+
+
+
+#identifying at which ASV 80% of total cumulative importance is reached
+importance_threshold_SVN <- 0.80  # for 80% cumulative importance
+
+top_vars_needed_SVN <- importance_tax_SVN %>%
+  mutate(row = row_number()) %>%
+  filter(cumulative_importance >= importance_threshold_SVN) %>%
+  slice(1)
+
+top_vars_needed_SVN
+
+#graphing cumulative importance
+ggplot(importance_tax_SVN, aes(x = rank, y = cumulative_importance)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(color = "darkblue") +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  labs(
+    x = "Number of Top Variables",
+    y = "Cumulative Importance",
+    title = "Cumulative Variable Importance (SVN)"
+  ) +
+  theme_minimal()
+
+
+
+
+
+#graphing importance for each ASV
+tax_SVN <- data.frame(ps_analysis_2@tax_table)
+tax_SVN <- tibble::rownames_to_column(tax_SVN, var = "Variable")
+
+SVN_plot_importance_tax_SVN <- dplyr::left_join(importance_SVN, tax_SVN, by = "Variable") %>%
+  mutate(Genus   = ifelse(is.na(Genus), "Unclassified", Genus),
+         Family  = ifelse(is.na(Family), "Unclassified", Family)) %>% 
+  mutate(ASV_pad    = str_pad(Variable, width = 6, side = "right"),
+         Family_pad = str_pad(Family, width = 20, side = "right"),
+         TaxLabel   = paste(ASV_pad, Family_pad, sep = "|"))
+
+
+#graphing importance for each of the top ASVs
+ggplot(SVN_plot_importance_tax_SVN[1:23,], aes(x = Importance, y = reorder(TaxLabel, Importance), fill = Importance)) +
+  geom_col()+
+  theme_bw()+
+  labs(x = "Importance", 
+       y = "Top 23 ASV Predictors (ASV | Family)", 
+       title = "SVN Random Forest: ASVs by Importance")+
+  theme(legend.position = "none", axis.title.x = element_text(size = 20), axis.title.y = element_text(size = 20), axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 10, family = "mono"))
+
+```
+
+
+
+```{r diverging bar plot}
+#data frame with only top asvs
+SVN_TP_23 <- importance_tax_SVN %>% 
+  slice(1:23) %>% 
+  pull(1) %>% 
+  as.character()  
+
+SVN_rf_df_TP_23 <- ASVs_Hdt_10 %>% 
+  select(Sample.ID, all_of(SVN_TP_23)) %>% 
+  full_join(Birth_outcomes_SVN) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+  
+
+nrow(SVN_rf_df_TP_23)
+
+
+# Summarize average relative abundance per group
+SVN_summary_df <- SVN_rf_df_TP_23 %>%
+  rownames_to_column(var= "Sample.ID") %>% 
+  pivot_longer(!c(Sample.ID, Single_outcome_SVN), names_to = "ASV") %>%
+  group_by(ASV, Single_outcome_SVN) %>%
+  summarize(MeanAbundance = mean(value)) %>%
+  pivot_wider(names_from = Single_outcome_SVN, values_from = MeanAbundance) %>%
+  mutate(Difference = SVN - Healthy)
+
+# Run Wilcoxon tests for each taxon
+SVN_stat_results <- SVN_rf_df_TP_23 %>%
+  rownames_to_column(var= "Sample.ID") %>% 
+  pivot_longer(!c(Sample.ID, Single_outcome_SVN), names_to = "ASV") %>%
+  group_by(ASV) %>%
+  summarise(
+    p_value = wilcox.test(value ~ Single_outcome_SVN)$p.value
+  ) %>%
+  mutate(p_adj = p.adjust(p_value, method = "BY"),  
+         significance = case_when(
+           p_adj < 0.001 ~ "***",
+           p_adj < 0.01  ~ "**",
+           p_adj < 0.05  ~ "*",
+           TRUE ~ ""
+         ))
+
+SVN_plot_df <- left_join(SVN_summary_df, SVN_stat_results, by = "ASV")
+
+# Add taxonomic assignments to importance rankings.
+tax_SVN <- data.frame(ps_analysis_2@tax_table)
+tax_SVN <- tibble::rownames_to_column(tax_SVN, var = "ASV")
+
+#formatting labels
+SVN_plot_df_tax_SVN <- dplyr::left_join(SVN_plot_df, tax_SVN, by = "ASV") %>%
+  mutate(Genus   = ifelse(is.na(Genus), "Unclassified", Genus),
+         Family  = ifelse(is.na(Family), "Unclassified", Family)) %>% 
+  mutate(ASV_pad    = str_pad(ASV, width = 6, side = "right"),
+         Family_pad = str_pad(Family, width = 20, side = "right"),
+         TaxLabel   = paste(ASV_pad, Family_pad, sep = "|"))
+
+#graphing difference in reletive abundance between SVN and healthy for top asvs
+ggplot(SVN_plot_df_tax_SVN, aes(x = reorder(TaxLabel, Difference), y = Difference, fill = Difference > 0)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = significance), hjust = ifelse(SVN_plot_df_tax_SVN$Difference > 0, -0.2, 1.2)) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
+  labs(title = "Microbiome Relative Abundance: SVN vs. Healthy",
+       x = "Top 23 ASV Predictors (ASV | Family)",
+       y = "Difference in Relative Abundance") +
+  theme_minimal()+
+  theme(legend.position="none", axis.text.y = element_text(family = "mono"), axis.text.x = element_text(size = 15))
+
+```
+
+
+
+## AGP
+
+```{r create data frame with all variables of interest}
+#creating a dataframe with necessary variables
+
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+Serology_AGP <- select(sample_data, Sample.ID, inflammation_AGP_cat) 
+
+AGP_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(Serology_AGP) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-Single_outcome_SVN)
+
+nrow(AGP_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_APG <- rsample::initial_split(AGP_rf_df, prop = 7/10, strata = inflammation_AGP_cat) 
+Data_train_APG <- rsample::training(Data_split_APG) 
+Data_test_APG <- rsample::testing(Data_split_APG)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_APG <- rsample::bootstraps(Data_train_APG, strata = inflammation_AGP_cat)
+
+Data_folds_APG
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(inflammation_AGP_cat ~ ., data = Data_train_APG)
+
+```
+
+```{r Creating model}
+#creating workflow for AGP RF model.
+ranger_recipe_APG <- 
+  recipe(formula = inflammation_AGP_cat ~ ., data = Data_train_APG) %>% 
+  step_novel()
+
+ranger_spec_APG <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_APG <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_APG) %>% 
+  add_model(ranger_spec_APG) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_APG <-
+  tune_grid(ranger_workflow_APG, resamples = Data_folds_APG, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter   
+show_best(ranger_tune_APG, metric = "roc_auc")
+
+autoplot(ranger_tune_APG)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_APG <- ranger_workflow_APG %>% 
+  finalize_workflow(select_best(ranger_tune_APG))
+
+final_rf_APG
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_APG <- last_fit(final_rf_APG, Data_split_APG)
+
+Data_fit_APG
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_APG)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_APG, metric = "accuracy")  
+show_best(ranger_tune_APG, metric = "roc_auc")  
+show_best(ranger_tune_APG, metric = "brier_class") 
+
+#plotting ROC curve
+AGP_predictions <- collect_predictions(Data_fit_APG)
+
+roc_curve(AGP_predictions,
+          truth = inflammation_AGP_cat,
+          ".pred_Elevated AGP")%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()+
+  theme( axis.title.x = element_text(size = 20), axis.title.y = element_text(size = 20))
+
+```
+
+
+
+```{r Best Predictors}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+
+#running the same model but with importance measured
+ranger_spec_AGPb <- ranger_spec_APG %>% 
+  finalize_model(select_best(ranger_tune_APG)) %>% 
+  set_engine("ranger", importance = "permutation")
+
+ranger_workflow_AGPb <- workflow() %>% 
+  add_recipe(ranger_recipe_APG) %>% 
+  add_model(ranger_spec_AGPb) %>% 
+  fit(Data_train_APG) %>% 
+  pull_workflow_fit()
+
+ranger_workflow_AGPb %>%  vip()
+
+importance_AGP <- ranger_workflow_AGPb %>% vi()
+
+```
+
+```{r Viewing best predictors with taxonomy}
+#importance values into data frame
+importance_AGP <- ranger_workflow_AGPb %>% vi()
+
+
+# Add taxonomic assignments to importance rankings.
+tax_AGP <- data.frame(ps_analysis_2@tax_table)
+tax_AGP <- tibble::rownames_to_column(tax_AGP, var = "ASV")
+tax_AGP <- tax_AGP %>% rename(Variable = ASV)
+
+importance_tax_AGP <- dplyr::left_join(importance_AGP, tax_AGP, by = "Variable")
+
+#removing importance values < 0
+importance_tax_AGP <- importance_tax_AGP %>%
+  mutate(
+    Importance = pmax(Importance, 0)  # clip negatives to zero
+  ) %>%
+  arrange(desc(Importance))
+
+#total importance
+total_importance_AGP <- sum(importance_tax_AGP$Importance)
+
+
+#cumulative importance for each ASV predictor
+importance_tax_AGP <- importance_tax_AGP %>%
+  mutate(
+    cumulative_raw = cumsum(Importance),
+    cumulative_importance = cumulative_raw / total_importance_AGP,
+    importance_percent = Importance / total_importance_AGP,
+    rank = row_number()
+  )
+
+max(importance_tax_AGP$cumulative_importance)
+
+importance_tax_AGP$Name <- paste(importance_tax_AGP$Variable, ",", importance_tax_AGP$Family)
+
+
+
+
+
+#identifying ASV at 80% importance
+importance_threshold_AGP <- 0.80  # for 80% cumulative importance
+
+top_vars_needed_AGP <- importance_tax_AGP %>%
+  mutate(row = row_number()) %>%
+  filter(cumulative_importance >= importance_threshold_AGP) %>%
+  slice(1)
+
+top_vars_needed_AGP
+
+#plotting importance
+ggplot(importance_tax_AGP, aes(x = rank, y = cumulative_importance)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(color = "darkblue") +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  labs(
+    x = "Number of Top Variables",
+    y = "Cumulative Importance",
+    title = "Cumulative Variable Importance (AGP)"
+  ) +
+  theme_minimal()
+
+
+tax_SVN <- data.frame(ps_analysis_2@tax_table)
+tax_SVN <- tibble::rownames_to_column(tax_SVN, var = "Variable")
+
+AGP_plot_importance_tax_AGP <- dplyr::left_join(importance_AGP, tax_SVN, by = "Variable") %>%
+  mutate(Genus   = ifelse(is.na(Genus), "Unclassified", Genus),
+         Family  = ifelse(is.na(Family), "Unclassified", Family)) %>% 
+  mutate(ASV_pad    = str_pad(Variable, width = 6, side = "right"),
+         Family_pad = str_pad(Family, width = 23, side = "right"),
+         TaxLabel   = paste(ASV_pad, Family_pad, sep = "|"))
+
+
+#graphing top predictors
+ggplot(AGP_plot_importance_tax_AGP[1:30,], aes(x = Importance, y = reorder(TaxLabel, Importance), fill = Importance)) +
+  geom_col()+
+  theme_bw()+
+  labs(x = "Importance", 
+       y = "Top 30 ASV Predictors (ASV | Family)", 
+       title = "AGP Random Forest: ASVs by Importance")+
+  theme(legend.position = "none", axis.title.x = element_text(size = 20), axis.title.y = element_text(size = 20), axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 10, family = "mono"))
+
+
+```
+
+
+
+
+```{r diverging bar plot}
+
+AGP_TP_30 <- importance_tax_AGP %>% 
+  slice(1:30) %>% 
+  pull(1) %>% 
+  as.character()  # Ensure it's a clean character vector
+
+
+#create data frame with all variables of interest
+AGP_rf_df_TP_30 <- ASVs_Hdt_10 %>%
+  select(Sample.ID, all_of(AGP_TP_30)) %>% 
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(Serology_AGP) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-Single_outcome_SVN)
+
+# Summarize average relative abundance per group
+AGP_summary_df <- AGP_rf_df_TP_30 %>%
+  rownames_to_column(var= "Sample.ID") %>% 
+  pivot_longer(!c(Sample.ID, inflammation_AGP_cat), names_to = "ASV") %>%
+  group_by(ASV, inflammation_AGP_cat) %>%
+  summarize(MeanAbundance = mean(value)) %>%
+  pivot_wider(names_from = inflammation_AGP_cat, values_from = MeanAbundance) %>%
+  mutate(Difference = `Elevated AGP` - `Normal AGP`)
+
+# Run Wilcoxon tests for each taxon
+AGP_stat_results <- AGP_rf_df_TP_30 %>%
+  rownames_to_column(var= "Sample.ID") %>% 
+  pivot_longer(!c(Sample.ID, inflammation_AGP_cat), names_to = "ASV") %>%
+  group_by(ASV) %>%
+  summarise(
+    p_value = wilcox.test(value ~ inflammation_AGP_cat)$p.value
+  ) %>%
+  mutate(p_adj = p.adjust(p_value, method = "BY"),  
+         significance = case_when(
+           p_adj < 0.001 ~ "***",
+           p_adj < 0.01  ~ "**",
+           p_adj < 0.05  ~ "*",
+           TRUE ~ ""
+         ))
+
+AGP_plot_df <- left_join(AGP_summary_df, AGP_stat_results, by = "ASV")
+
+# Add taxonomic assignments to importance rankings.
+tax_AGP <- data.frame(ps_analysis_2@tax_table)
+tax_AGP <- tibble::rownames_to_column(tax_AGP, var = "ASV")
+
+AGP_plot_df_tax_AGP <- dplyr::left_join(AGP_plot_df, tax_AGP, by = "ASV") %>%
+  mutate(Genus   = ifelse(is.na(Genus), "Unclassified", Genus),
+         Family  = ifelse(is.na(Family), "Unclassified", Family)) %>% 
+  mutate(ASV_pad    = str_pad(ASV, width = 6, side = "right"),
+         Family_pad = str_pad(Family, width = 25, side = "right"),
+         TaxLabel   = paste(ASV_pad, Family_pad, sep = "|"))
+
+ggplot(AGP_plot_df_tax_AGP, aes(x = reorder(TaxLabel, Difference), y = Difference, fill = Difference > 0)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = significance), hjust = ifelse(AGP_plot_df_tax_AGP$Difference > 0, -0.2, 1.2)) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
+  labs(title = "Microbiome Relative Abundance: Elevated AGP",
+       x = "Top 30 ASV Predictors (ASV | Family)",
+       y = "Difference in Relative Abundance") +
+  theme_minimal()+
+  theme(legend.position="none", axis.text.y = element_text(family = "mono"), axis.text.x = element_text(size = 15))
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+## CRP
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+Serology_CRP <- select(sample_data, Sample.ID, inflammation_CRP_cat) 
+
+CRP_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(Serology_CRP) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-Single_outcome_SVN)
+
+nrow(CRP_rf_df) 
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_CRP <- rsample::initial_split(CRP_rf_df, prop = 7/10, strata = inflammation_CRP_cat) 
+Data_train_CRP <- rsample::training(Data_split_CRP) 
+Data_test_CRP <- rsample::testing(Data_split_CRP)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_CRP <- rsample::bootstraps(Data_train_CRP, strata = inflammation_CRP_cat)
+
+Data_folds_CRP
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(inflammation_CRP_cat ~ ., data = Data_train_CRP)
+
+```
+
+```{r Creating model}
+#creating workflow for CRP RF model.
+ranger_recipe_CRP <- 
+  recipe(formula = inflammation_CRP_cat ~ ., data = Data_train_CRP) %>% 
+  step_novel()
+
+ranger_spec_CRP <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_CRP <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_CRP) %>% 
+  add_model(ranger_spec_CRP) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_CRP <-
+  tune_grid(ranger_workflow_CRP, resamples = Data_folds_CRP, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter  
+show_best(ranger_tune_CRP, metric = "roc_auc")
+
+autoplot(ranger_tune_CRP)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_CRP <- ranger_workflow_CRP %>% 
+  finalize_workflow(select_best(ranger_tune_CRP))
+
+final_rf_CRP
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_CRP <- last_fit(final_rf_CRP, Data_split_CRP)
+
+Data_fit_CRP
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_CRP)
+
+#metrics of the best model with testing set
+show_best(ranger_tune_CRP, metric = "accuracy")  
+show_best(ranger_tune_CRP, metric = "roc_auc")  
+show_best(ranger_tune_CRP, metric = "brier_class") 
+
+#plotting ROC curve
+CRP_predictions <- collect_predictions(Data_fit_CRP)
+
+roc_curve(CRP_predictions,
+          truth = inflammation_CRP_cat,
+          ".pred_Elevated CRP")%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+```
+
+
+## Anemia
+
+```{r create data frame with all variables of interest}
+
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN)
+
+Serology_Anemia <- select(sample_data, Sample.ID, Anemia_Binary) 
+
+Anemia_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(Serology_Anemia) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-Single_outcome_SVN)
+
+nrow(Anemia_rf_df)  
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_Anemia <- rsample::initial_split(Anemia_rf_df, prop = 7/10, strata = Anemia_Binary) 
+Data_train_Anemia <- rsample::training(Data_split_Anemia) 
+Data_test_Anemia <- rsample::testing(Data_split_Anemia)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_Anemia <- rsample::bootstraps(Data_train_Anemia, strata = Anemia_Binary)
+
+Data_folds_Anemia
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Anemia_Binary ~ ., data = Data_train_Anemia)
+
+```
+
+```{r Creating model}
+#creating workflow for Anemia RF model.
+ranger_recipe_Anemia <- 
+  recipe(formula = Anemia_Binary ~ ., data = Data_train_Anemia) %>% 
+  step_novel()
+
+ranger_spec_Anemia <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_Anemia <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_Anemia) %>% 
+  add_model(ranger_spec_Anemia) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_Anemia <-
+  tune_grid(ranger_workflow_Anemia, resamples = Data_folds_Anemia, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter  
+show_best(ranger_tune_Anemia, metric = "roc_auc")
+
+autoplot(ranger_tune_Anemia)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_Anemia <- ranger_workflow_Anemia %>% 
+  finalize_workflow(select_best(ranger_tune_Anemia))
+
+final_rf_Anemia
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_Anemia <- last_fit(final_rf_Anemia, Data_split_Anemia)
+
+Data_fit_Anemia
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics from model
+collect_metrics(Data_fit_Anemia)
+
+
+#metrics of best model using training set
+show_best(ranger_tune_Anemia, metric = "accuracy")  
+show_best(ranger_tune_Anemia, metric = "roc_auc")  
+show_best(ranger_tune_Anemia, metric = "brier_class") 
+
+#graphing ROC
+Anemia_predictions <- collect_predictions(Data_fit_Anemia)
+
+roc_curve(Anemia_predictions,
+          truth = Anemia_Binary,
+          ".pred_Anemia")%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+
+
+
+## aEPEC
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+aEPEC <- select(sample_data, Sample.ID, aEPEC_cat) 
+
+EPEC_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(aEPEC) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-Single_outcome_SVN)
+
+nrow(EPEC_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_EPEC <- rsample::initial_split(EPEC_rf_df, prop = 7/10, strata = aEPEC_cat) 
+Data_train_EPEC <- rsample::training(Data_split_EPEC) 
+Data_test_EPEC <- rsample::testing(Data_split_EPEC)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_EPEC <- rsample::bootstraps(Data_train_EPEC, strata = aEPEC_cat)
+
+Data_folds_EPEC
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(aEPEC_cat ~ ., data = Data_train_EPEC)
+
+```
+
+```{r Creating model}
+#creating workflow for EPEC RF model.
+ranger_recipe_EPEC <- 
+  recipe(formula = aEPEC_cat ~ ., data = Data_train_EPEC) %>% 
+  step_novel()
+
+ranger_spec_EPEC <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_EPEC <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_EPEC) %>% 
+  add_model(ranger_spec_EPEC) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_EPEC <-
+  tune_grid(ranger_workflow_EPEC, resamples = Data_folds_EPEC, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter  
+show_best(ranger_tune_EPEC, metric = "roc_auc")
+
+autoplot(ranger_tune_EPEC)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_EPEC <- ranger_workflow_EPEC %>% 
+  finalize_workflow(select_best(ranger_tune_EPEC))
+
+final_rf_EPEC
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_EPEC <- last_fit(final_rf_EPEC, Data_split_EPEC)
+
+Data_fit_EPEC
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+
+collect_metrics(Data_fit_EPEC)
+
+#the metrics of the best model using the training set
+
+show_best(ranger_tune_EPEC, metric = "accuracy")  
+show_best(ranger_tune_EPEC, metric = "roc_auc")  
+show_best(ranger_tune_EPEC, metric = "brier_class") 
+
+#plotting ROC curve
+aEPEC_predictions <- collect_predictions(Data_fit_EPEC)
+
+roc_curve(aEPEC_predictions,
+          truth = aEPEC_cat,
+          ".pred_Negative")%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+
+
+
+
+
+## calprotectin
+
+```{r create data frame with all variables of interest}
+
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN)
+
+#50 micrograms/gram
+Serology_Calprotectin <- select(sample_data, Sample.ID, calprotectin_ug.g) %>% 
+  mutate(inflammation_calprotectin_cat = case_when(calprotectin_ug.g >= 50 ~ "Elevated Calprotectin", calprotectin_ug.g < 50 ~ "Normal Calprotectin")) %>%
+  select(-calprotectin_ug.g)
+
+cal_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(Serology_Calprotectin) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-Single_outcome_SVN)
+
+nrow(cal_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_cal <- rsample::initial_split(cal_rf_df, prop = 7/10, strata = inflammation_calprotectin_cat) 
+Data_train_cal <- rsample::training(Data_split_cal) 
+Data_test_cal <- rsample::testing(Data_split_cal)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_cal <- rsample::bootstraps(Data_train_cal, strata = inflammation_calprotectin_cat)
+
+Data_folds_cal
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(aEPEC_cat ~ ., data = Data_train_EPEC)
+
+```
+
+```{r Creating model}
+#creating workflow for calprotectin RF model.
+ranger_recipe_cal <- 
+  recipe(formula = inflammation_calprotectin_cat ~ ., data = Data_train_cal) %>% 
+  step_novel()
+
+ranger_spec_cal <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_cal <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_cal) %>% 
+  add_model(ranger_spec_cal) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_cal <-
+  tune_grid(ranger_workflow_cal, resamples = Data_folds_cal, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_cal, metric = "roc_auc")
+
+autoplot(ranger_tune_cal)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_cal <- ranger_workflow_cal %>% 
+  finalize_workflow(select_best(ranger_tune_cal))
+
+final_rf_cal
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_cal <- last_fit(final_rf_cal, Data_split_cal)
+
+Data_fit_cal
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+
+collect_metrics(Data_fit_cal)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_cal, metric = "accuracy")  
+show_best(ranger_tune_cal, metric = "roc_auc")  
+show_best(ranger_tune_cal, metric = "brier_class") 
+
+#plotting ROC curve
+cal_predictions <- collect_predictions(Data_fit_cal)
+
+roc_curve(cal_predictions,
+          truth = inflammation_calprotectin_cat,
+          ".pred_Elevated Calprotectin")%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+
+```{r Best Predictors}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#same model but with importance measured
+
+ranger_spec_calb <- ranger_spec_cal %>% 
+  finalize_model(select_best(ranger_tune_cal)) %>% 
+  set_engine("ranger", importance = "permutation")
+
+ranger_workflow_calb <- workflow() %>% 
+  add_recipe(ranger_recipe_cal) %>% 
+  add_model(ranger_spec_calb) %>% 
+  fit(Data_train_cal) %>% 
+  pull_workflow_fit()
+
+ranger_workflow_calb %>%  vip()
+
+importance_cal <- ranger_workflow_calb %>% vi()
+
+```
+
+
+
+
+
+```{r Viewing best predictors with taxonomy}
+#data frame of importance values
+importance_cal <- ranger_workflow_calb %>% vi()
+
+
+# Add taxonomic assignments to importance rankings.
+tax_cal <- data.frame(ps_analysis_2@tax_table)
+tax_cal <- tibble::rownames_to_column(tax_cal, var = "ASV")
+tax_cal <- tax_cal %>% rename(Variable = ASV)
+
+importance_tax_cal <- dplyr::left_join(importance_cal, tax_cal, by = "Variable")
+
+#removing importance scores <0
+importance_tax_cal <- importance_tax_cal %>%
+  mutate(
+    Importance = pmax(Importance, 0)  # clip negatives to zero
+  ) %>%
+  arrange(desc(Importance))
+
+
+#Total importance
+total_importance_cal <- sum(importance_tax_cal$Importance)
+
+
+#cumulative importance at each ASV
+importance_tax_cal <- importance_tax_cal %>%
+  mutate(
+    cumulative_raw = cumsum(Importance),
+    cumulative_importance = cumulative_raw / total_importance_cal,
+    importance_percent = Importance / total_importance_cal,
+    rank = row_number()
+  )
+
+max(importance_tax_cal$cumulative_importance)
+
+importance_tax_cal$Name <- paste(importance_tax_cal$Variable, ",", importance_tax_cal$Family)
+
+
+
+
+
+#Identifying the predictor at which 80% of cumulative importance is reached
+importance_threshold_cal <- 0.80  # for 80% cumulative importance
+
+top_vars_needed_cal <- importance_tax_cal %>%
+  mutate(row = row_number()) %>%
+  filter(cumulative_importance >= importance_threshold_cal) %>%
+  slice(1)
+
+top_vars_needed_cal
+
+#plotting importance by predictor
+ggplot(importance_tax_cal, aes(x = rank, y = cumulative_importance)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(color = "darkblue") +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  labs(
+    x = "Number of Top Variables",
+    y = "Cumulative Importance",
+    title = "Cumulative Variable Importance (Calprotectin)"
+  ) +
+  theme_minimal()
+
+
+#plotting top predictors
+ggplot(importance_cal[1:21,], aes(x = Importance, y = reorder(Variable, Importance), fill = Importance)) +
+  geom_col()+
+  theme_bw()+
+  labs(x = "Importance", y = "ASV", title = "Calprotectin Random Forest: ASVs by Importance")+
+  theme(legend.position = "none", axis.title.x = element_text(size = 20), axis.title.y = element_text(size = 20), axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 10))
+
+tax_SVN <- data.frame(ps_analysis_2@tax_table)
+tax_SVN <- tibble::rownames_to_column(tax_SVN, var = "Variable")
+
+cal_plot_importance_tax_cal <- dplyr::left_join(importance_cal, tax_SVN, by = "Variable") %>%
+  mutate(Genus   = ifelse(is.na(Genus), "Unclassified", Genus),
+         Family  = ifelse(is.na(Family), "Unclassified", Family)) %>% 
+  mutate(ASV_pad    = str_pad(Variable, width = 6, side = "right"),
+         Family_pad = str_pad(Family, width = 25, side = "right"),
+         TaxLabel   = paste(ASV_pad, Family_pad, sep = "|"))
+
+
+
+ggplot(cal_plot_importance_tax_cal[1:21,], aes(x = Importance, y = reorder(TaxLabel, Importance), fill = Importance)) +
+  geom_col()+
+  theme_bw()+
+  labs(x = "Importance", 
+       y = "Top 21 ASV Predictors (ASV | Family)", 
+       title = "Calprotectin Random Forest: ASVs by Importance")+
+  theme(legend.position = "none", axis.title.x = element_text(size = 20), axis.title.y = element_text(size = 20), axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 10, family = "mono"))
+
+```
+
+
+
+
+
+
+
+
+```{r diverging bar plot}
+
+cal_TP_21 <- importance_tax_cal %>% 
+  slice(1:21) %>% 
+  pull(1) %>% 
+  as.character()  # Ensure it's a clean character vector
+
+
+#create data frame with all variables of interest
+cal_rf_df_TP_21 <- ASVs_Hdt_10 %>%
+  select(Sample.ID, all_of(cal_TP_21)) %>% 
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(Serology_Calprotectin) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-Single_outcome_SVN)
+
+
+# Summarize average relative abundance per group
+cal_summary_df <- cal_rf_df_TP_21 %>%
+  rownames_to_column(var= "Sample.ID") %>% 
+  pivot_longer(!c(Sample.ID, inflammation_calprotectin_cat), names_to = "ASV") %>%
+  group_by(ASV, inflammation_calprotectin_cat) %>%
+  summarize(MeanAbundance = mean(value)) %>%
+  pivot_wider(names_from = inflammation_calprotectin_cat, values_from = MeanAbundance) %>%
+  mutate(Difference = `Elevated Calprotectin` - `Normal Calprotectin`)
+
+# Run Wilcoxon tests for each taxon
+cal_stat_results <- cal_rf_df_TP_21 %>%
+  rownames_to_column(var= "Sample.ID") %>% 
+  pivot_longer(!c(Sample.ID, inflammation_calprotectin_cat), names_to = "ASV") %>%
+  group_by(ASV) %>%
+  summarise(
+    p_value = wilcox.test(value ~ inflammation_calprotectin_cat)$p.value
+  ) %>%
+  mutate(p_adj = p.adjust(p_value, method = "BY"),  
+         significance = case_when(
+           p_adj < 0.001 ~ "***",
+           p_adj < 0.01  ~ "**",
+           p_adj < 0.05  ~ "*",
+           TRUE ~ ""
+         ))
+
+cal_plot_df <- left_join(cal_summary_df, cal_stat_results, by = "ASV")
+
+# Add taxonomic assignments to importance rankings.
+tax_cal <- data.frame(ps_analysis_2@tax_table)
+tax_cal <- tibble::rownames_to_column(tax_cal, var = "ASV")
+
+cal_plot_df_tax_cal <- dplyr::left_join(cal_plot_df, tax_cal, by = "ASV") %>%
+  mutate(Genus   = ifelse(is.na(Genus), "Unclassified", Genus),
+         Family  = ifelse(is.na(Family), "Unclassified", Family)) %>% 
+  mutate(ASV_pad    = str_pad(ASV, width = 6, side = "right"),
+         Family_pad = str_pad(Family, width = 25, side = "right"),
+         TaxLabel   = paste(ASV_pad, Family_pad, sep = "|"))
+
+ggplot(cal_plot_df_tax_cal, aes(x = reorder(TaxLabel, Difference), y = Difference, fill = Difference > 0)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = significance), hjust = ifelse(cal_plot_df_tax_cal$Difference > 0, -0.2, 1.2)) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
+  labs(title = "Microbiome Relative Abundance: Elevated Calprotectin",
+       x = "Top 21 ASV Predictors (ASV | Family)",
+       y = "Difference in Relative Abundance") +
+  theme_minimal()+
+  theme(legend.position="none", axis.text.y = element_text(family = "mono"), axis.text.x = element_text(size = 15))
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## RF ROC curves for all 5 features of interest
+
+```{r}
+#metrics for each RF model
+collect_metrics(Data_fit_APG)
+
+collect_metrics(Data_fit_CRP)
+
+collect_metrics(Data_fit_Anemia)
+
+collect_metrics(Data_fit_EPEC)
+
+collect_metrics(Data_fit_cal)
+
+#ROC curves for each RF model
+AGP_ROC <- roc_curve(AGP_predictions, truth = inflammation_AGP_cat, ".pred_Elevated AGP")%>%
+  mutate(model = "Elevated AGP")
+
+CRP_ROC <- roc_curve(CRP_predictions, truth = inflammation_CRP_cat, ".pred_Elevated CRP")%>%
+  mutate(model = "Elevated CRP")
+
+Anemia_ROC <- roc_curve(Anemia_predictions, truth = Anemia_Binary, ".pred_Anemia")%>%
+  mutate(model = "Anemia")
+
+aEPEC_ROC <- roc_curve(aEPEC_predictions, truth = aEPEC_cat, ".pred_Positive")%>%
+  mutate(model = "aEPEC")
+
+cal_ROC <- roc_curve(cal_predictions, truth = inflammation_calprotectin_cat, ".pred_Elevated Calprotectin")%>%
+  mutate(model = "Elevated Calprotectin")
+
+ROC_maternal <- bind_rows(AGP_ROC, CRP_ROC, Anemia_ROC, aEPEC_ROC, cal_ROC) %>% 
+  mutate(model = factor(model, levels = c("Elevated AGP", "Elevated CRP", "Anemia", "aEPEC", "Elevated Calprotectin")))
+
+#AUCs as labels 
+custom_label_maternal <- c("AUC = 0.742", "AUC = 0.554", "AUC = 0.595", "AUC = 0.447", "AUC = 0.793")
+
+#plotting RF models
+panel_labels_maternal <- ROC_maternal %>%
+  group_by(model) %>%
+  summarize() %>% 
+  mutate(label = custom_label_maternal)
+
+
+ggplot(ROC_maternal, aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path(aes(), size = 1.5) +
+  facet_wrap(~ model, nrow = 1) +
+  geom_abline(lty = 3, color = "gray", size = 1.5) +
+  geom_text(data = panel_labels_maternal,
+            aes(x = .4, y = .2, label = label),
+            inherit.aes = FALSE,
+            hjust = 0, vjust = 1, size = 6) +
+  coord_equal() +
+  theme_bw() + 
+  theme(legend.position = "none", axis.title.x = element_text(size = 30), axis.title.y = element_text(size = 30), axis.text.x = element_text(size = 15),axis.text.y = element_text(size = 15), strip.text = element_text(size = 15) )
+
+
+```
+
+
+
+
+
+```{r}
+#statistics for each RF model
+# SVN
+truth_1 <- SVN_predictions$Single_outcome_SVN 
+truth_1 <- factor(truth_1, levels = c("SVN", "Healthy"))
+score_1 <- SVN_predictions$.pred_SVN
+roc1 <- roc(truth_1, score_1, levels = c("SVN", "Healthy"), direction = ">")
+auc(roc1)
+ci.auc(roc1)
+ci_roc1 <- ci.se(roc1, specificities = seq(0, 1, 0.01))
+
+
+
+# AGP
+truth_AGP <- AGP_predictions$inflammation_AGP_cat
+truth_AGP <- factor(truth_AGP, levels = c("Elevated AGP", "Normal AGP"))
+score_AGP <- AGP_predictions$".pred_Elevated AGP"
+rocAGP <- roc(truth_AGP, score_AGP, levels = c("Elevated AGP", "Normal AGP"), direction = ">")
+auc(rocAGP)
+ci.auc(rocAGP)
+ci_rocAGP <- ci.se(rocAGP, specificities = seq(0, 1, 0.01))
+
+
+# CRP
+truth_CRP <- CRP_predictions$inflammation_CRP_cat 
+truth_CRP <- factor(truth_CRP, levels = c("Elevated CRP", "Normal CRP"))
+score_CRP <- CRP_predictions$".pred_Elevated CRP"
+rocCRP <- roc(truth_CRP, score_CRP, levels = c("Elevated CRP", "Normal CRP"), direction = ">")
+auc(rocCRP)
+ci.auc(rocCRP)
+ci_rocCRP <- ci.se(rocCRP, specificities = seq(0, 1, 0.01))
+
+
+
+# Anemia
+truth_Anemia <- Anemia_predictions$Anemia_Binary 
+truth_Anemia <- factor(truth_Anemia, levels = c("Anemia", "No_Anemia"))
+score_Anemia <- Anemia_predictions$.pred_Anemia
+rocAnemia <- roc(truth_Anemia, score_Anemia, levels = c("Anemia", "No_Anemia"), direction = ">")
+auc(rocAnemia)
+ci.auc(rocAnemia)
+ci_rocAnemia <- ci.se(rocAnemia, specificities = seq(0, 1, 0.01))
+
+
+
+# aEPEC
+truth_aEPEC <- aEPEC_predictions$aEPEC_cat
+truth_aEPEC <- factor(truth_aEPEC, levels = c("Positive", "Negative"))
+score_aEPEC <- aEPEC_predictions$.pred_Positive
+rocaEPEC <- roc(truth_aEPEC, score_aEPEC, levels = c("Positive", "Negative"), direction = ">")
+auc(rocaEPEC)
+ci.auc(rocaEPEC)
+ci_rocaEPEC <- ci.se(rocaEPEC, specificities = seq(0, 1, 0.01))
+
+
+
+# calprotectin
+truth_cal <- cal_predictions$inflammation_calprotectin_cat 
+truth_cal <- factor(truth_cal, levels = c("Elevated Calprotectin", "Normal Calprotectin"))
+score_cal <- cal_predictions$".pred_Elevated Calprotectin"
+roccal <- roc(truth_cal, score_cal, levels = c("Elevated Calprotectin", "Normal Calprotectin"), direction = ">")
+auc(roccal)
+ci.auc(roccal)
+ci_roccal <- ci.se(roccal, specificities = seq(0, 1, 0.01))
+
+
+```
+
+
+
+# RF models: microbiome + maternal features as predictors
+
+## SVN with AGP
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+Serology_AGP <- select(sample_data, Sample.ID, inflammation_AGP_cat) 
+
+SVN_rf_df_2 <- ASVs_Hdt_10 %>%
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(Serology_AGP) %>% 
+  mutate(inflammation_AGP_cat = factor(inflammation_AGP_cat, levels = c("Normal AGP", "Elevated AGP"))) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df_2 )
+
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN_2  <- rsample::initial_split(SVN_rf_df_2 , prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN_2  <- rsample::training(Data_split_SVN_2 ) 
+Data_test_SVN_2  <- rsample::testing(Data_split_SVN_2 )
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN_2  <- rsample::bootstraps(Data_train_SVN_2 , strata = Single_outcome_SVN)
+
+Data_folds_SVN_2 
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SVN_2)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model with microbiome and AGP.
+ranger_recipe_SVN_2  <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN_2) %>% 
+  step_novel()
+
+ranger_spec_SVN_2  <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN_2  <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN_2) %>% 
+  add_model(ranger_spec_SVN_2) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_SVN_2  <-
+  tune_grid(ranger_workflow_SVN_2, resamples = Data_folds_SVN_2, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_SVN_2, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN_2)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_SVN_2 <- ranger_workflow_SVN_2 %>% 
+  finalize_workflow(select_best(ranger_tune_SVN_2))
+
+final_rf_SVN_2
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_SVN_2 <- last_fit(final_rf_SVN_2, Data_split_SVN_2)
+
+Data_fit_SVN_2
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+
+collect_metrics(Data_fit_SVN_2)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_SVN_2, metric = "accuracy")  
+show_best(ranger_tune_SVN_2, metric = "roc_auc")  
+show_best(ranger_tune_SVN_2, metric = "brier_class") 
+
+
+#plotting ROC curve
+SVN_predictions_2 <- collect_predictions(Data_fit_SVN_2)
+
+roc_curve(SVN_predictions_2,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+## SVN with CRP
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+Serology_CRP <- select(sample_data, Sample.ID, inflammation_CRP_cat) 
+
+SVN_rf_df_3 <- ASVs_Hdt_10 %>%
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(Serology_CRP) %>% 
+  mutate(inflammation_CRP_cat = factor(inflammation_CRP_cat, levels = c("Normal CRP", "Elevated CRP"))) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df_3)
+
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN_3  <- rsample::initial_split(SVN_rf_df_3 , prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN_3  <- rsample::training(Data_split_SVN_3 ) 
+Data_test_SVN_3  <- rsample::testing(Data_split_SVN_3)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN_3  <- rsample::bootstraps(Data_train_SVN_3 , strata = Single_outcome_SVN)
+
+Data_folds_SVN_3 
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SVN_2)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model with microbiome and CRP.
+ranger_recipe_SVN_3  <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN_3) %>% 
+  step_novel()
+
+ranger_spec_SVN_3  <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN_3  <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN_3) %>% 
+  add_model(ranger_spec_SVN_3) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_SVN_3  <-
+  tune_grid(ranger_workflow_SVN_3, resamples = Data_folds_SVN_3, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_SVN_3, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN_3)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_SVN_3 <- ranger_workflow_SVN_3 %>% 
+  finalize_workflow(select_best(ranger_tune_SVN_3))
+
+final_rf_SVN_3
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_SVN_3 <- last_fit(final_rf_SVN_3, Data_split_SVN_3)
+
+Data_fit_SVN_3
+
+```
+
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_SVN_3)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_SVN_3, metric = "accuracy")  
+show_best(ranger_tune_SVN_3, metric = "roc_auc")  
+show_best(ranger_tune_SVN_3, metric = "brier_class") 
+
+
+#plotting ROC curve
+SVN_predictions_3 <- collect_predictions(Data_fit_SVN_3)
+
+roc_curve(SVN_predictions_3,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+## SVN with aEPEC
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN)
+
+aEPEC <- select(sample_data, Sample.ID, aEPEC_cat) 
+
+
+SVN_rf_df_4 <- ASVs_Hdt_10 %>%
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(aEPEC) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df_4)
+
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN_4  <- rsample::initial_split(SVN_rf_df_4 , prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN_4  <- rsample::training(Data_split_SVN_4 ) 
+Data_test_SVN_4  <- rsample::testing(Data_split_SVN_4)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN_4  <- rsample::bootstraps(Data_train_SVN_4 , strata = Single_outcome_SVN)
+
+Data_folds_SVN_4 
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SVN_2)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model with microbiome and aEPEC.
+ranger_recipe_SVN_4  <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN_4) %>% 
+  step_novel()
+
+ranger_spec_SVN_4  <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN_4 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN_4) %>% 
+  add_model(ranger_spec_SVN_4) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_SVN_4  <-
+  tune_grid(ranger_workflow_SVN_4, resamples = Data_folds_SVN_4, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_SVN_4, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN_4)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_SVN_4 <- ranger_workflow_SVN_4 %>% 
+  finalize_workflow(select_best(ranger_tune_SVN_4))
+
+final_rf_SVN_4
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_SVN_4 <- last_fit(final_rf_SVN_4, Data_split_SVN_4)
+
+Data_fit_SVN_4
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_SVN_4)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_SVN_4, metric = "accuracy")  
+show_best(ranger_tune_SVN_4, metric = "roc_auc")  
+show_best(ranger_tune_SVN_4, metric = "brier_class") 
+
+
+#plotting ROC curve
+SVN_predictions_4 <- collect_predictions(Data_fit_SVN_4)
+
+roc_curve(SVN_predictions_4,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+
+## SVN with Anemia
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN)
+
+Serology_Anemia <- select(sample_data, Sample.ID, Anemia_Binary) 
+
+SVN_rf_df_5 <- ASVs_Hdt_10 %>%
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(Serology_Anemia) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df_5)
+
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN_5  <- rsample::initial_split(SVN_rf_df_5, prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN_5  <- rsample::training(Data_split_SVN_5) 
+Data_test_SVN_5  <- rsample::testing(Data_split_SVN_5)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN_5  <- rsample::bootstraps(Data_train_SVN_5, strata = Single_outcome_SVN)
+
+Data_folds_SVN_5 
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SVN_5)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model with microbiome and anemia.
+ranger_recipe_SVN_5  <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN_5) %>% 
+  step_novel()
+
+ranger_spec_SVN_5  <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN_5 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN_5) %>% 
+  add_model(ranger_spec_SVN_5) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_SVN_5  <-
+  tune_grid(ranger_workflow_SVN_5, resamples = Data_folds_SVN_5, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_SVN_5, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN_5)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_SVN_5 <- ranger_workflow_SVN_5 %>% 
+  finalize_workflow(select_best(ranger_tune_SVN_5))
+
+final_rf_SVN_5
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_SVN_5 <- last_fit(final_rf_SVN_5, Data_split_SVN_5)
+
+Data_fit_SVN_5
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_SVN_5)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_SVN_5, metric = "accuracy")  
+show_best(ranger_tune_SVN_5, metric = "roc_auc")  
+show_best(ranger_tune_SVN_5, metric = "brier_class") 
+
+
+#plotting ROC curve
+SVN_predictions_5 <- collect_predictions(Data_fit_SVN_5)
+
+roc_curve(SVN_predictions_5,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+## SVN with calprotectin
+
+```{r create data frame with all variables of interest}
+
+
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN)
+
+#50 micrograms/gram
+Serology_Calprotectinprotectin <- select(sample_data, Sample.ID, calprotectin_ug.g) %>% 
+  mutate(inflammation_calprotectin_cat = case_when(calprotectin_ug.g >= 50 ~ "Elevated Calprotectin", calprotectin_ug.g < 50 ~ "Normal Calprotectin")) %>% 
+  select(-calprotectin_ug.g)
+
+SVN_rf_df_6 <- ASVs_Hdt_10 %>%
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(Serology_Calprotectinprotectin) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df_6)
+
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN_6  <- rsample::initial_split(SVN_rf_df_6, prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN_6  <- rsample::training(Data_split_SVN_6) 
+Data_test_SVN_6  <- rsample::testing(Data_split_SVN_6)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN_6  <- rsample::bootstraps(Data_train_SVN_6, strata = Single_outcome_SVN)
+
+Data_folds_SVN_6 
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SVN_6)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model with microbiome and calprotectin.
+ranger_recipe_SVN_6  <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN_6) %>% 
+  step_novel()
+
+ranger_spec_SVN_6  <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN_6 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN_6) %>% 
+  add_model(ranger_spec_SVN_6) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_SVN_6  <-
+  tune_grid(ranger_workflow_SVN_6, resamples = Data_folds_SVN_6, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_SVN_6, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN_6)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_SVN_6 <- ranger_workflow_SVN_6 %>% 
+  finalize_workflow(select_best(ranger_tune_SVN_6))
+
+final_rf_SVN_6
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_SVN_6 <- last_fit(final_rf_SVN_6, Data_split_SVN_6)
+
+Data_fit_SVN_6
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_SVN_6)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_SVN_6, metric = "accuracy")  
+show_best(ranger_tune_SVN_6, metric = "roc_auc")  
+show_best(ranger_tune_SVN_6, metric = "brier_class") 
+
+#plotting ROC curve
+SVN_predictions_6 <- collect_predictions(Data_fit_SVN_6)
+
+roc_curve(SVN_predictions_6,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+
+## SVN with BMI
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN)
+BMI <- select(sample_data, Sample.ID, BMI)
+
+SVN_rf_df_7 <- ASVs_Hdt_10 %>%
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(BMI) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df_7)
+
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN_7  <- rsample::initial_split(SVN_rf_df_7, prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN_7  <- rsample::training(Data_split_SVN_7) 
+Data_test_SVN_7  <- rsample::testing(Data_split_SVN_7)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN_7  <- rsample::bootstraps(Data_train_SVN_7, strata = Single_outcome_SVN)
+
+Data_folds_SVN_7 
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SVN_7)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model with microbiome and BMI.
+ranger_recipe_SVN_7  <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN_7) %>% 
+  step_novel()
+
+ranger_spec_SVN_7  <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN_7 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN_7) %>% 
+  add_model(ranger_spec_SVN_7) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_SVN_7  <-
+  tune_grid(ranger_workflow_SVN_7, resamples = Data_folds_SVN_7, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_SVN_7, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN_7)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_SVN_7 <- ranger_workflow_SVN_7 %>% 
+  finalize_workflow(select_best(ranger_tune_SVN_7))
+
+final_rf_SVN_7
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_SVN_7 <- last_fit(final_rf_SVN_7, Data_split_SVN_7)
+
+Data_fit_SVN_7
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_SVN_7)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_SVN_7, metric = "accuracy")  
+show_best(ranger_tune_SVN_7, metric = "roc_auc")  
+show_best(ranger_tune_SVN_7, metric = "brier_class") 
+
+
+#plotting ROC curve
+SVN_predictions_7 <- collect_predictions(Data_fit_SVN_7)
+
+roc_curve(SVN_predictions_7,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+
+
+## SVN with wealth index
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN)
+WI <- select(sample_data, Sample.ID, Wealth_index)
+
+SVN_rf_df_8 <- ASVs_Hdt_10 %>%
+  full_join(Birth_outcomes_SVN) %>% 
+  full_join(WI) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other")
+
+nrow(SVN_rf_df_8)
+
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_SVN_8  <- rsample::initial_split(SVN_rf_df_8, prop = 7/10, strata = Single_outcome_SVN) 
+Data_train_SVN_8  <- rsample::training(Data_split_SVN_8) 
+Data_test_SVN_8  <- rsample::testing(Data_split_SVN_8)
+
+
+
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_SVN_8  <- rsample::bootstraps(Data_train_SVN_8, strata = Single_outcome_SVN)
+
+Data_folds_SVN_8 
+
+```
+
+```{ referencing best practices for code}
+
+#install.packages("usemodels")
+library(usemodels)
+
+use_ranger(Single_outcome_SVN ~ ., data = Data_train_SVN_8)
+
+```
+
+```{r Creating model}
+#creating workflow for SVN RF model with microbiome and wealth index.
+ranger_recipe_SVN_8  <- 
+  recipe(formula = Single_outcome_SVN ~ ., data = Data_train_SVN_8) %>% 
+  step_novel()
+
+ranger_spec_SVN_8  <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_SVN_8 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_SVN_8) %>% 
+  add_model(ranger_spec_SVN_8) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ 
+ranger_tune_SVN_8  <-
+  tune_grid(ranger_workflow_SVN_8, resamples = Data_folds_SVN_8, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_SVN_8, metric = "roc_auc")
+
+autoplot(ranger_tune_SVN_8)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on AUC
+final_rf_SVN_8 <- ranger_workflow_SVN_8 %>% 
+  finalize_workflow(select_best(ranger_tune_SVN_8))
+
+final_rf_SVN_8
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587) 
+
+Data_fit_SVN_8 <- last_fit(final_rf_SVN_8, Data_split_SVN_8)
+
+Data_fit_SVN_8
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_SVN_8)
+
+#the metrics of the best model using the training set
+show_best(ranger_tune_SVN_8, metric = "accuracy")  
+show_best(ranger_tune_SVN_8, metric = "roc_auc")  
+show_best(ranger_tune_SVN_8, metric = "brier_class") 
+
+
+#plotting ROC curve
+SVN_predictions_8 <- collect_predictions(Data_fit_SVN_8)
+
+roc_curve(SVN_predictions_8,
+          truth = Single_outcome_SVN,
+          .pred_Healthy)%>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  theme_bw()
+
+
+
+```
+
+
+## graphing AUCs
+
+```{r graphing AUCs}
+
+#metrics for each RF model
+collect_metrics(Data_fit_SVN)
+
+collect_metrics(Data_fit_SVN_2)
+
+collect_metrics(Data_fit_SVN_3)
+
+collect_metrics(Data_fit_SVN_4)
+
+collect_metrics(Data_fit_SVN_5)
+
+collect_metrics(Data_fit_SVN_6)
+
+collect_metrics(Data_fit_SVN_7)
+
+collect_metrics(Data_fit_SVN_8)
+
+#ROC curve for each RF model
+SVN_ROC <- roc_curve(SVN_predictions, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome")
+
+SVN_2_ROC <- roc_curve(SVN_predictions_2, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome + AGP")
+
+SVN_3_ROC <- roc_curve(SVN_predictions_3, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome + CRP")
+
+SVN_4_ROC <- roc_curve(SVN_predictions_4, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome + Anemia")
+
+SVN_5_ROC <- roc_curve(SVN_predictions_5, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome + aEPEC")
+
+SVN_6_ROC <- roc_curve(SVN_predictions_6, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome + Calprotectin")
+
+SVN_7_ROC <- roc_curve(SVN_predictions_7, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome + BMI")
+
+SVN_8_ROC <- roc_curve(SVN_predictions_8, truth = Single_outcome_SVN, ".pred_Healthy")%>%
+  mutate(model = "Microbiome + Wealth Index")
+
+ROC_SVN <- bind_rows(SVN_ROC, SVN_2_ROC, SVN_3_ROC, SVN_4_ROC, SVN_5_ROC, SVN_6_ROC, SVN_7_ROC, SVN_8_ROC) %>% 
+  mutate(model = factor(model, levels = c("Microbiome", "Microbiome + AGP", "Microbiome + CRP", "Microbiome + Anemia", "Microbiome + aEPEC", "Microbiome + Calprotectin", "Microbiome + BMI", "Microbiome + Wealth Index")))
+
+#Making AUC into labels
+custom_label_SVN <- c("AUC = 0.653", "AUC = 0.660", "AUC = 0.652", "AUC = 0.660", "AUC = 0.657", "AUC = 0.658", "AUC = 0.672", "AUC = 0.655")
+
+#plotting ROC curves 
+panel_labels_SVN <- ROC_SVN %>%
+  group_by(model) %>%
+  summarize() %>% 
+  mutate(label = custom_label_SVN)
+
+
+ggplot(ROC_SVN, aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path(aes(), size = 1.5) +
+  facet_wrap(~ model, ncol = 3) +
+  geom_abline(lty = 3, color = "gray", size = 1.5) +
+  geom_text(data = panel_labels_SVN,
+            aes(x = .4, y = .2, label = label),
+            inherit.aes = FALSE,
+            hjust = 0, vjust = 1, size = 6) +
+  coord_equal() +
+  theme_bw() + 
+  theme(legend.position = "none", axis.title.x = element_text(size = 30), axis.title.y = element_text(size = 30), axis.text.x = element_text(size = 15),axis.text.y = element_text(size = 15), strip.text = element_text(size = 15) )
+
+```
+
+
+```{r significance}
+#Statistics on each RF model
+
+# Microbiome
+truth_1 <- SVN_predictions$Single_outcome_SVN 
+truth_1 <- factor(truth_1, levels = c("SVN", "Healthy"))
+score_1 <- SVN_predictions$.pred_Healthy
+roc1 <- roc(truth_1, score_1, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc1)
+ci.auc(roc1)
+ci_roc1 <- ci.se(roc1, specificities = seq(0, 1, 0.01))
+
+
+# Microbiome + AGP
+truth_2 <- SVN_predictions_2$Single_outcome_SVN
+truth_2 <- factor(truth_2, levels = c("SVN", "Healthy"))
+score_2 <- SVN_predictions_2$.pred_Healthy
+roc2 <- roc(truth_2, score_2, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc2)
+ci.auc(roc2)
+ci_roc2 <- ci.se(roc2, specificities = seq(0, 1, 0.01))
+
+# Microbiome + CRP
+truth_3 <- SVN_predictions_3$Single_outcome_SVN 
+truth_3 <- factor(truth_3, levels = c("SVN", "Healthy"))
+score_3 <- SVN_predictions_3$.pred_Healthy
+roc3 <- roc(truth_3, score_3, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc3)
+ci.auc(roc3)
+ci_roc3 <- ci.se(roc3, specificities = seq(0, 1, 0.01))
+
+# Microbiome + Anemia
+truth_4 <- SVN_predictions_4$Single_outcome_SVN 
+truth_4 <- factor(truth_4, levels = c("SVN", "Healthy"))
+score_4 <- SVN_predictions_4$.pred_Healthy
+roc4 <- roc(truth_4, score_4, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc4)
+ci.auc(roc4)
+ci_roc4 <- ci.se(roc4, specificities = seq(0, 1, 0.01))
+
+# Microbiome + aEPEC
+truth_5 <- SVN_predictions_5$Single_outcome_SVN
+truth_5 <- factor(truth_5, levels = c("SVN", "Healthy"))
+score_5 <- SVN_predictions_5$.pred_Healthy
+roc5 <- roc(truth_5, score_5, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc5)
+ci.auc(roc5)
+ci_roc5 <- ci.se(roc5, specificities = seq(0, 1, 0.01))
+
+
+# Microbiome + calprotectin
+truth_6 <- SVN_predictions_6$Single_outcome_SVN 
+truth_6 <- factor(truth_6, levels = c("SVN", "Healthy"))
+score_6 <- SVN_predictions_6$.pred_Healthy
+roc6 <- roc(truth_6, score_6, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc6)
+ci.auc(roc6)
+ci_roc6 <- ci.se(roc6, specificities = seq(0, 1, 0.01))
+
+
+# Microbiome + BMI
+truth_7 <- SVN_predictions_7$Single_outcome_SVN 
+truth_7 <- factor(truth_7, levels = c("SVN", "Healthy"))
+score_7 <- SVN_predictions_7$.pred_Healthy
+roc7 <- roc(truth_7, score_7, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc7)
+ci.auc(roc7)
+ci_roc7 <- ci.se(roc7, specificities = seq(0, 1, 0.01))
+
+# Microbiome + wealth index
+truth_8 <- SVN_predictions_8$Single_outcome_SVN
+truth_8 <- factor(truth_8, levels = c("SVN", "Healthy"))
+score_8 <- SVN_predictions_8$.pred_Healthy
+roc8 <- roc(truth_8, score_8, levels = c("SVN", "Healthy"), direction = "<")
+auc(roc8)
+ci.auc(roc8)
+ci_roc8 <- ci.se(roc8, specificities = seq(0, 1, 0.01))
+
+
+
+#statistical test
+roc.test(roc1, roc2, method = "delong")
+
+```
+
+
+
+
+
+
+# RF models: microbiome predicting micronutrients
+
+
+
+## RBP4
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+hist(sample_data$RBP4_ng.ml)
+
+#transforming to log scale
+df_x <- sample_data %>% 
+  select(Sample.ID, RBP4_ng.ml) %>% 
+  mutate(Y = log(RBP4_ng.ml)) %>% 
+  select(-c(RBP4_ng.ml))
+
+hist(df_x$Y)
+
+x_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(df_x) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-c(Single_outcome_SVN))
+
+nrow(x_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_x <- rsample::initial_split(x_rf_df, prop = 7/10, strata = Y) 
+Data_train_x <- rsample::training(Data_split_x) 
+Data_test_x <- rsample::testing(Data_split_x)
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_x <- rsample::bootstraps(Data_train_x, strata = Y)
+
+Data_folds_x
+
+```
+
+
+```{r Creating model}
+#creating workflow for RBP4 RF model.
+
+ranger_recipe_x <- 
+  recipe(formula = Y ~ ., data = Data_train_x)%>% 
+  step_novel() 
+
+ranger_spec_x <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("regression") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_x <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_x) %>% 
+  add_model(ranger_spec_x) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ranger_tune_x <-
+  tune_grid(ranger_workflow_x, resamples = Data_folds_x, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_x, metric = "rsq")
+
+autoplot(ranger_tune_x)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on r squared value
+final_rf_x <- ranger_workflow_x %>% 
+  finalize_workflow(select_best(ranger_tune_x))
+
+final_rf_x
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587)
+
+Data_fit_x <- last_fit(final_rf_x, Data_split_x)
+
+Data_fit_x
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_x)
+collect_predictions(Data_fit_x)
+
+#plotting truth vs predicted
+collect_predictions(Data_fit_x) %>%
+  ggplot(aes(x = .pred, y = Y)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(x = "Predicted", y = "Actual")
+
+
+```
+
+
+
+
+
+
+
+## Vitamin B12
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+hist(sample_data$Vitamin_B12_pg.mL)
+
+#transforming to log scale
+df_x2 <- sample_data %>% 
+  select(Sample.ID, Vitamin_B12_pg.mL) %>% 
+  mutate(Y = log(Vitamin_B12_pg.mL)) %>% 
+  select(-c(Vitamin_B12_pg.mL))
+
+hist(df_x2$Y)
+
+x2_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(df_x2) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-c(Single_outcome_SVN))
+
+nrow(x2_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_x2 <- rsample::initial_split(x2_rf_df, prop = 7/10, strata = Y) 
+Data_train_x2 <- rsample::training(Data_split_x2) 
+Data_test_x2 <- rsample::testing(Data_split_x2)
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_x2 <- rsample::bootstraps(Data_train_x2, strata = Y)
+
+Data_folds_x2
+
+```
+
+
+```{r Creating model}
+#creating workflow for vitamin B12 RF model.
+ranger_recipe_x2 <- 
+  recipe(formula = Y ~ ., data = Data_train_x2)%>% 
+  step_novel() 
+
+ranger_spec_x2 <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("regression") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_x2 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_x2) %>% 
+  add_model(ranger_spec_x2) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ranger_tune_x2 <-
+  tune_grid(ranger_workflow_x2, resamples = Data_folds_x2, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_x2, metric = "rsq")
+
+autoplot(ranger_tune_x2)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on r squared value
+final_rf_x2 <- ranger_workflow_x2 %>% 
+  finalize_workflow(select_best(ranger_tune_x2))
+
+final_rf_x2
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587)
+
+Data_fit_x2 <- last_fit(final_rf_x2, Data_split_x2)
+
+Data_fit_x2
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_x2)
+collect_predictions(Data_fit_x2)
+
+
+#plotting truth vs predicted
+collect_predictions(Data_fit_x2) %>%
+  ggplot(aes(x = .pred, y = Y)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(x = "Predicted", y = "Actual")
+
+
+```
+
+
+
+
+## Folate
+
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+hist(sample_data$Folate_ng.mL)
+
+#transforming to log scale
+df_x3 <- sample_data %>% 
+  select(Sample.ID, Folate_ng.mL) %>% 
+  mutate(Y = log(Folate_ng.mL)) %>% 
+  select(-c(Folate_ng.mL))
+
+hist(df_x3$Y)
+
+x3_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(df_x3) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  filter(Y > -10000000000) %>% 
+  select(-c(Single_outcome_SVN))
+
+nrow(x3_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_x3 <- rsample::initial_split(x3_rf_df, prop = 7/10, strata = Y) 
+Data_train_x3 <- rsample::training(Data_split_x3) 
+Data_test_x3 <- rsample::testing(Data_split_x3)
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_x3 <- rsample::bootstraps(Data_train_x3, strata = Y)
+
+Data_folds_x3
+
+```
+
+
+```{r Creating model}
+#creating workflow for folate RF model.
+ranger_recipe_x3 <- 
+  recipe(formula = Y ~ ., data = Data_train_x3)%>% 
+  step_novel() 
+
+ranger_spec_x3 <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("regression") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_x3 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_x3) %>% 
+  add_model(ranger_spec_x3) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ranger_tune_x3 <-
+  tune_grid(ranger_workflow_x3, resamples = Data_folds_x3, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_x3, metric = "rsq")
+
+autoplot(ranger_tune_x3)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on r squared value
+final_rf_x3 <- ranger_workflow_x3 %>% 
+  finalize_workflow(select_best(ranger_tune_x3))
+
+final_rf_x3
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587)
+
+Data_fit_x3 <- last_fit(final_rf_x3, Data_split_x3)
+
+Data_fit_x3
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_x3)
+collect_predictions(Data_fit_x3)
+
+
+#plotting truth vs predicted
+collect_predictions(Data_fit_x3) %>%
+  ggplot(aes(x = .pred, y = Y)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(x = "Predicted", y = "Actual")
+
+
+```
+
+
+
+
+
+
+
+## Ferritin
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+hist(sample_data$Ferritin_ng.ml)
+
+#transforming to log scale
+df_x4 <- sample_data %>% 
+  select(Sample.ID, Ferritin_ng.ml) %>% 
+  mutate(Y = log(Ferritin_ng.ml)) %>% 
+  select(-c(Ferritin_ng.ml))
+
+hist(df_x4$Y)
+
+x4_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(df_x4) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-c(Single_outcome_SVN))
+
+nrow(x4_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_x4 <- rsample::initial_split(x4_rf_df, prop = 7/10, strata = Y) 
+Data_train_x4 <- rsample::training(Data_split_x4) 
+Data_test_x4 <- rsample::testing(Data_split_x4)
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_x4 <- rsample::bootstraps(Data_train_x4, strata = Y)
+
+Data_folds_x4
+
+```
+
+
+```{r Creating model}
+#creating workflow for ferritin RF model.
+ranger_recipe_x4 <- 
+  recipe(formula = Y ~ ., data = Data_train_x4)%>% 
+  step_novel() 
+
+ranger_spec_x4 <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("regression") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_x4 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_x4) %>% 
+  add_model(ranger_spec_x4) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ranger_tune_x4 <-
+  tune_grid(ranger_workflow_x4, resamples = Data_folds_x4, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_x4, metric = "rsq")
+
+autoplot(ranger_tune_x4)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on r squared value
+final_rf_x4 <- ranger_workflow_x4 %>% 
+  finalize_workflow(select_best(ranger_tune_x4))
+
+final_rf_x4
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587)
+
+Data_fit_x4 <- last_fit(final_rf_x4, Data_split_x4)
+
+Data_fit_x4
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_x4)
+collect_predictions(Data_fit_x4)
+
+
+#plotting truth vs predicted
+collect_predictions(Data_fit_x4) %>%
+  ggplot(aes(x = .pred, y = Y)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(x = "Predicted", y = "Actual")
+
+
+```
+
+
+
+
+
+## Zinc
+```{r create data frame with all variables of interest}
+Birth_outcomes_SVN <- select(Birth_outcomes, Sample.ID, Single_outcome_SVN) 
+
+hist(sample_data$Zinc_mg.L)
+
+#transforming to log scale
+df_x5 <- sample_data %>% 
+  select(Sample.ID, Zinc_mg.L) %>% 
+  mutate(Y = log(Zinc_mg.L)) %>% 
+  select(-c(Zinc_mg.L))
+
+hist(df_x5$Y)
+
+x5_rf_df <- Birth_outcomes_SVN %>% 
+  full_join(ASVs_Hdt_10) %>% 
+  full_join(df_x5) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  %>% 
+  filter(Single_outcome_SVN != "Other") %>% 
+  select(-c(Single_outcome_SVN))
+
+nrow(x5_rf_df)
+
+```
+
+### build a model
+```{r training and testing sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#creating training/testing sets. stratifying by outcome of interest so that the training and testing sets have the same proportion of that condition. 
+
+Data_split_x5 <- rsample::initial_split(x5_rf_df, prop = 7/10, strata = Y) 
+Data_train_x5 <- rsample::training(Data_split_x5) 
+Data_test_x5 <- rsample::testing(Data_split_x5)
+
+```
+
+```{r resampling sets}
+
+# Set seed for reproducibility.
+#sample(1:10000, 1)
+set.seed(9587)
+
+#resampling via bootstrap
+Data_folds_x5 <- rsample::bootstraps(Data_train_x5, strata = Y)
+
+Data_folds_x5
+
+```
+
+
+```{r Creating model}
+#creating workflow for zinc RF model.
+ranger_recipe_x5 <- 
+  recipe(formula = Y ~ ., data = Data_train_x5)%>% 
+  step_novel() 
+
+ranger_spec_x5 <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("regression") %>% 
+  set_engine("ranger") 
+
+ranger_workflow_x5 <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe_x5) %>% 
+  add_model(ranger_spec_x5) 
+
+#sample(1:10000, 1)
+set.seed(9587)
+ranger_tune_x5 <-
+  tune_grid(ranger_workflow_x5, resamples = Data_folds_x5, grid = 10)
+
+```
+
+
+```{r Identifying best random forest model}
+#visualizing metrics for each parameter
+show_best(ranger_tune_x5, metric = "rsq")
+
+autoplot(ranger_tune_x5)
+
+```
+
+
+```{r Selecting final random forest model}
+#selecting best parameters for random forest model based on r squared value
+final_rf_x5 <- ranger_workflow_x5 %>% 
+  finalize_workflow(select_best(ranger_tune_x5))
+
+final_rf_x5
+
+```
+
+
+```{r fiting the model}
+
+set.seed(9587)
+
+Data_fit_x5 <- last_fit(final_rf_x5, Data_split_x5)
+
+Data_fit_x5
+
+```
+#### Outcomes
+
+```{r}
+#collecting metrics
+collect_metrics(Data_fit_x5)
+collect_predictions(Data_fit_x5)
+
+
+#plotting truth vs predicted
+collect_predictions(Data_fit_x5) %>%
+  ggplot(aes(x = .pred, y = Y)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(x = "Predicted", y = "Actual")
+```
+
+
+
+
+
+
+
+
+
+
+

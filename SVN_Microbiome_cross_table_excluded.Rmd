@@ -1,0 +1,183 @@
+---
+title: "SVN_Microbiome_cross_table_excluded"
+author: "Rachel McMillan"
+date: "2025-10-17"
+output: html_document
+---
+
+# Background
+This script produces a cross table of maternal features and birth outcomes for the mother-child dyads for which stool samples were sequenced. Features of interest are selected, categorized, mutated as appropriate, recombined, and then put in a cross table of "analyzed" vs "excluded" (not included in manuscript) or "analyzed" vs "whole". 
+
+
+## Packages
+
+```{r Packages}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+#BiocManager::install()
+
+#BiocManager::install("phyloseq")
+library(phyloseq)
+
+#install.packages("tidyverse")
+library(tidyverse)
+
+#install.packages("here")
+library(here)
+
+#install.packages("crosstable")
+library(crosstable)
+```
+
+## Load data
+```{r Loading data}
+
+#loading data
+load(here("results/filtered_dada_2_output_environment.RData"))
+
+```
+
+
+## Data organization
+### Extracting information into data frames
+
+```{r Sample data to data frame}
+
+#labeling kept samples
+sample_data <- ps_analysis_2@sam_data %>% 
+  data.frame() %>% 
+  tibble::rownames_to_column(var = "Sample.ID") %>% 
+  mutate(dataset = "analized")
+
+nrow(sample_data) #237
+
+
+sample_data_2 <- ps_analysis_1@sam_data %>% 
+  data.frame() %>% 
+  tibble::rownames_to_column(var = "Sample.ID")
+
+nrow(sample_data_2) #368
+
+#labeling excluded samples
+sample_data_3 <- full_join(sample_data, sample_data_2) %>% 
+  mutate(dataset = case_when(dataset == "analized" ~ "analized",
+                            .default = "excluded"))
+
+dataset <- select(sample_data_3, Sample.ID, dataset)
+
+#labeling whole data set
+sample_data_4 <- sample_data_2%>% 
+  mutate(dataset = "Whole")
+
+sample_data_4 <- full_join(sample_data_4, sample_data)
+
+nrow(sample_data_4) #605
+
+```
+
+
+
+### Seperating/combining information into data frames based on categories
+
+
+```{r Maternal Serology data frame}
+
+Maternal_serology <- select(sample_data_3, Sample.ID, Anemia_Binary, inflammation_AGP_cat, inflammation_CRP_cat, calprotectin_ug.g) %>% 
+mutate(inflammation_calprotectin_cat = case_when(calprotectin_ug.g >= 50 ~ "Elevated Calprotectin", calprotectin_ug.g < 50 ~ "Normal Calprotectin")) %>% 
+  select(-calprotectin_ug.g)
+#50 micrograms/gram as cut off for normal/elevated calprotectin
+
+
+```
+
+```{r child info}
+
+child <- select(sample_data_3, Sample.ID, Sex) %>% mutate(Sex = factor(Sex))
+
+```
+
+
+```{r cofactors}
+#making sure variables are "factors"
+cofactors <- select(sample_data_3, Sample.ID, Maternal_age_cat, Maternal_education_cat, Parity_cat, Wealth_index, BMI_cat, BMI) %>% 
+  mutate(Maternal_age_cat = factor(Maternal_age_cat, levels = c("<18", "18-35", ">35"))) %>% 
+  mutate(Maternal_education_cat = factor(Maternal_education_cat, levels = c("No Education", "1-5", "6-10", ">10"))) %>% 
+  mutate(Parity_cat = factor(Parity_cat, levels = c("0", "1-2", ">2"))) %>% 
+  mutate(Wealth_index = factor(Wealth_index, levels = c("Poorest", "Poorer", "middle", "Ricehest", "Richer"))) %>% 
+  mutate(BMI_cat = factor(BMI_cat, levels = c("Underweight", "Healthy Weight", "Overweight", "Obese"))) 
+
+```
+
+
+```{r Enteric Pathogens data frame}
+
+aEPEC <- select(sample_data_3, Sample.ID, aEPEC_cat)
+
+
+```
+
+```{r birth outcomes data frame}
+#including large for gestational age in the "normal" category
+#defining SVN to exclude those with miscarriges etc.
+Birth_outcomes <- select(sample_data_3, Sample.ID, Born_Alive, Percential_weight.GA, Birth_weight_cat, GA_birth_binary, GA_birth, Birth_weight) %>% 
+  mutate(Percential_weight.GA_2 = case_when(Percential_weight.GA == "normal" | Percential_weight.GA == "LGA" ~ "Normal", Percential_weight.GA == "SGA" ~ "SGA")) %>% 
+   mutate(SVN = case_when(Percential_weight.GA_2 == "SGA" | Birth_weight_cat == "Low Birth Weight" | GA_birth_binary == "Preterm" ~ "SVN", .default = "Other")) %>% 
+  mutate(Single_outcome_SVN = case_when(Born_Alive == "1" & Percential_weight.GA_2 == "Normal" & Birth_weight_cat == "Normal Weight" & GA_birth_binary == "Term" ~ "Healthy", Born_Alive == "1" & SVN == "SVN" ~ "SVN", .default = "Other"))
+
+```
+
+
+## cross table for those included vs excluded in analysis
+
+```{r create data frame with all variables of interest}
+excluded_ct_df <- Birth_outcomes %>% 
+  full_join(dataset) %>% 
+  full_join(cofactors) %>% 
+  full_join(child) %>% 
+  full_join(Maternal_serology) %>% 
+  full_join(aEPEC) %>% 
+  unique() %>% 
+  column_to_rownames(var = "Sample.ID")  
+
+nrow(excluded_ct_df)
+
+excluded_ct_df_whole <- select(sample_data_4, Sample.ID, dataset, Anemia_Binary, inflammation_AGP_cat, inflammation_CRP_cat, calprotectin_ug.g, Sex, Maternal_age_cat, Maternal_education_cat, Parity_cat, Wealth_index, BMI_cat, BMI, aEPEC_cat, Born_Alive, Percential_weight.GA, Birth_weight_cat, GA_birth_binary, GA_birth, Birth_weight) %>% 
+  mutate(Percential_weight.GA_2 = case_when(Percential_weight.GA == "normal" | Percential_weight.GA == "LGA" ~ "Normal", Percential_weight.GA == "SGA" ~ "SGA")) %>% 
+   mutate(SVN = case_when(Percential_weight.GA_2 == "SGA" | Birth_weight_cat == "Low Birth Weight" | GA_birth_binary == "Preterm" ~ "SVN", .default = "Other")) %>% 
+  mutate(Single_outcome_SVN = case_when(Born_Alive == "1" & Percential_weight.GA_2 == "Normal" & Birth_weight_cat == "Normal Weight" & GA_birth_binary == "Term" ~ "Healthy", Born_Alive == "1" & SVN == "SVN" ~ "SVN", .default = "Other"))%>% 
+  mutate(Maternal_age_cat = factor(Maternal_age_cat, levels = c("<18", "18-35", ">35"))) %>% 
+  mutate(Maternal_education_cat = factor(Maternal_education_cat, levels = c("No Education", "1-5", "6-10", ">10"))) %>% 
+  mutate(Parity_cat = factor(Parity_cat, levels = c("0", "1-2", ">2"))) %>% 
+  mutate(Wealth_index = factor(Wealth_index, levels = c("Poorest", "Poorer", "middle", "Ricehest", "Richer"))) %>% 
+  mutate(BMI_cat = factor(BMI_cat, levels = c("Underweight", "Healthy Weight", "Overweight", "Obese")))  %>% 
+  mutate(Sex = factor(Sex))%>% 
+  mutate(inflammation_calprotectin_cat = case_when(calprotectin_ug.g >= 50 ~ "Elevated Calprotectin", calprotectin_ug.g < 50 ~ "Normal Calprotectin")) %>% 
+  select(-c(calprotectin_ug.g, Sample.ID))   
+
+nrow(excluded_ct_df_whole)
+
+```
+
+
+```{ cross table}
+#included vs excluded crosstable
+excluded_CT <- crosstable(excluded_ct_df, by = dataset, total="both", test = TRUE)
+
+excluded_CT%>%
+  as_flextable()
+
+#significant difference between wealth index and anemia and calprotectin
+
+```
+
+
+```{r cross table (whole)}
+
+#included vs whole cross table
+excluded_CT_whole <- crosstable(excluded_ct_df_whole, by = dataset, total="both", test = TRUE)
+
+excluded_CT_whole%>%
+  as_flextable()
+
+```

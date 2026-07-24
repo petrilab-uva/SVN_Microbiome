@@ -1,0 +1,249 @@
+---
+title: "Phyloseq_all-batches"
+author: "Rachel McMillan"
+date: "2025-10-16"
+output: html_document
+---
+
+# Phyloseq-object_all-batches
+
+## Background
+In this script, the meta data file and the tax table and sequence table from the DADA2 pipeline are combined to a phyloseq object. 
+
+## Packages
+
+```{r Packages}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+#BiocManager::install()
+packageVersion("BiocManager") # Version 1.30.23
+
+#"DADA2" for sequence processing
+#BiocManager::install("dada2", version = "3.9")
+library(dada2)
+
+#"phyloseq" for data analysis
+#BiocManager::install("phyloseq")
+library(phyloseq)
+
+#"tidyverse" for data organization
+#install.packages("tidyverse")
+library(tidyverse)
+
+#"here" for easily locating files
+#install.packages("here")
+library(here)
+```
+
+
+## Loading in data
+
+```{r Loading in data}
+
+load(here("results/taxa-table_environment.RData"))
+
+Meta_data_1 <- read.csv(here("SVN_Microbiome_Meta-data_curated_full.csv"))
+
+```
+
+## Prepping data
+It is essential to ensure that the sample IDs and the fastq file IDs are the same and in the correct order. 
+
+```{r Confirming row names are the same}
+#Order row names and remove rows without 16S data
+
+
+merge_tables_all_batches_2 <- as.data.frame(merge_tables_all_batches)
+merge_tables_all_batches_2 <- merge_tables_all_batches_2 %>% 
+  rownames_to_column() 
+
+merge_tables_all_batches_2 <-rename(merge_tables_all_batches_2, fastq_ID = rowname)
+
+merge_tables_all_batches_2 <- merge_tables_all_batches_2 %>% 
+select(fastq_ID)
+
+Meta_data_2 <- left_join(merge_tables_all_batches_2, distinct(Meta_data_1, fastq_ID, .keep_all = TRUE))
+
+Meta_data_2 <- column_to_rownames(Meta_data_2, var = "fastq_ID")
+
+
+# Ensure metadata and seqtab rows are in the same order.
+all(rownames(Meta_data_2) == rownames(merge_tables_all_batches))
+
+
+```
+
+## Making phyloseq object
+
+```{r Creating phyloseq object}
+
+#combining tax table, meta data, and sequence table into one phyloseq object
+phyloseq_object_1 <- phyloseq(otu_table(merge_tables_all_batches, taxa_are_rows=FALSE), sample_data(Meta_data_2), tax_table(All_Batches_taxa))
+
+# Assign ASVs arbitrary names for visibility.
+dna <- Biostrings::DNAStringSet(taxa_names(phyloseq_object_1))
+names(dna) <- taxa_names(phyloseq_object_1)
+phyloseq_object_1 <- merge_phyloseq(phyloseq_object_1, dna)
+taxa_names(phyloseq_object_1) <- paste0("ASV", seq(ntaxa(phyloseq_object_1)))
+
+```
+
+```{r}
+ps_analysis_1 <- phyloseq_object_1 # Generate new phyloseq object for downstream analysis. Keeping original phyloseq object for reference.
+
+
+# Keep only Bacterial reads. Remove Mitochondria/Chloroplast reads and taxa with 
+ps_analysis_1 <- subset_taxa(ps_analysis_1,
+                           Kingdom == "Bacteria" &
+                             Family != "Mitochondria" &
+                             Family != "Chloroplast") 
+
+# removing samples with 0 reads.
+ps_analysis_1 <- prune_taxa(taxa_sums(ps_analysis_1) > 0, ps_analysis_1)
+
+
+#Sample characteristics
+dim(ps_analysis_1@otu_table)
+total_reads <- sample_sums(ps_analysis_1)
+sum(total_reads) 
+mean(total_reads) 
+median(total_reads) 
+range(total_reads) 
+```
+
+
+## Saving environment
+
+```{r removing unneeded objects}
+
+rm(total_reads, dna, merge_tables_all_batches_2, Meta_data_1)
+
+```
+
+```{r saving environment}
+
+save.image(here("results/phyloseq_environment.RData"))
+
+```
+
+
+## Loading in data
+
+```{r Making one table to track reads through DADA2 pipeline}
+
+#Loading in track tables
+track_1 <- read_csv("results/tables/Batch_1_track.csv") %>% 
+  mutate(Batch = "Batch_1")
+track_2 <- read_csv("results/tables/Batch_2_track.csv")%>% 
+  mutate(Batch = "Batch_2")
+track_3 <- read_csv("results/tables/Batch_3_track.csv")%>% 
+  mutate(Batch = "Batch_3")
+track_4 <- read_csv("results/tables/Batch_4_track.csv")%>% 
+  mutate(Batch = "Batch_4")
+
+
+#Joining track tables for all batches
+track_all <- full_join(track_1, track_2) %>% 
+  full_join(track_3) %>% 
+  full_join(track_4) %>% 
+  mutate(Percent_filtered = filtered/input*100)%>% 
+  mutate(Percent_merged = merged/input*100) %>% 
+  mutate(Delta_input = input-nonchim)
+
+
+```
+
+
+##Filtering samples
+
+```{r Viewing %filtered reads}
+
+track_plot <- ggplot(track_all, aes(x=Batch, y=Percent_input)) + 
+  geom_boxplot()
+
+track_plot
+
+track_plot_graph<- ggplot(track_all, aes(x=Percent_input, y=Percent_filtered, fill = Batch)) + 
+  geom_point( aes(color = Batch))+
+  labs(x = "Percent Assigned ASVs of Input Reads", y = "Percent Reads Filtered of Input Reads", title = "Sample Quality") +
+  theme(#legend.position = "none",
+        strip.background = element_blank(),
+        #aspect.ratio = 1, 
+        plot.title = element_text(hjust = 0.5, size = 20), 
+        axis.text.x = element_text(size = 20), 
+        axis.text.y = element_text(size = 20), 
+        axis.title.x = element_text(size = 20), 
+        axis.title.y = element_text(size = 20),
+        legend.title = element_text(size = 20), 
+        legend.text = element_text(size = 18)) 
+
+track_plot_graph
+
+```
+
+
+```{r Filtering samples}
+
+#filtering samples
+track_all_2 <- track_all %>% 
+  filter(Percent_input >= 50) %>% #Samples must have >= 50% of their initial number of reads
+  filter(Percent_filtered >= 65) %>% #After "filter and trim" samples must have >= 65% of initial reads
+  filter(input >= 20000) #Samples must have >= 20000 initial reads
+
+
+#plotting remaining samples
+track_plot_2 <- ggplot(track_all_2, aes(x=Batch, y=Percent_input)) + 
+  geom_boxplot()
+
+track_plot_2
+
+track_plot_graph_2<- ggplot(track_all_2, aes(x=Percent_input, y=Percent_filtered, fill = Batch)) + 
+  geom_point( aes(color = Batch))+
+  geom_smooth(method=lm, se=FALSE)
+
+track_plot_graph_2
+
+```
+
+
+```{r Making phyloseq with only remaining samples}
+
+filtered_names <- track_all_2[["...1"]]
+
+ps_analysis_2 <- prune_samples(filtered_names, ps_analysis_1)
+
+```
+
+
+```{r Reviewing remaining samples}
+
+# Review ASV and sample numbers.
+dim(ps_analysis_1@otu_table)
+dim(ps_analysis_2@otu_table) # Lost 3277 ASVs, 131 samples removed
+
+```
+
+
+## Summary
+
+At this point, all batches have been through the DADA2 pipeline and have been merged together. Taxonomy has been assigned. Phyloseq object has been generated. Low quality samples have been removed. Objects, formulas, etc. that are not needed for future steps have been removed. 
+
+For future steps, load the current environment.
+
+```{r Saving environment}
+#saving full environment
+save.image(here("results/filtered_dada_2_output_full_environment.RData"))
+
+```
+
+
+```{r Saving environment}
+#removing unneeded objects: some objects useful for later reference are kept
+rm(track_1, track_2, track_3, track_4, track_plot, track_plot_2, track_plot_graph, track_plot_graph_2, filtered_names)
+
+#saving smaller environment
+save.image(here("results/filtered_dada_2_output_environment.RData"))
+
+```
+
+

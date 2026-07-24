@@ -1,0 +1,141 @@
+---
+title: "SVN_McMillan_SVN_logistic-regression"
+author: "Rachel McMillan"
+date: "2025-05-12"
+output: html_document
+---
+# Background 
+In this script, multivariable logistic regression is done to determine if Elevated AGP or Elevated calprotectin is associated with SVN when adjusting for the "normal" cofactors (BMI, age, etc.). 
+
+
+## Packages
+
+```{r Packages}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+#BiocManager::install()
+
+#BiocManager::install("phyloseq")
+library(phyloseq)
+
+#install.packages("tidyverse")
+library(tidyverse)
+
+#install.packages("here")
+library(here)
+```
+## Data
+```{r loading in data files}
+#loading appropriate data files
+
+load(here("results/filtered_dada_2_output_environment.RData"))
+
+```
+
+
+```{r Sample data to data frame}
+
+sample_data <- ps_analysis_2@sam_data %>% 
+  data.frame() %>% 
+  tibble::rownames_to_column(var = "Sample.ID")
+
+```
+
+
+
+## Currated data
+
+```{r birth outcomes data frame}
+#combining large for gestational age into the "normal" category
+#defining SVN to exclude those with miscarriages etc.
+Birth_outcomes <- select(sample_data, Sample.ID, Born_Alive, Percential_weight.GA, Birth_weight_cat, GA_birth_binary, GA_birth, Birth_weight) %>% 
+  mutate(Percential_weight.GA_2 = case_when(Percential_weight.GA == "normal" | Percential_weight.GA == "LGA" ~ "Normal", Percential_weight.GA == "SGA" ~ "SGA")) %>% 
+   mutate(SVN = case_when(Percential_weight.GA_2 == "SGA" | Birth_weight_cat == "Low Birth Weight" | GA_birth_binary == "Preterm" ~ "SVN", .default = "Other")) %>% 
+  mutate(Single_outcome_SVN = case_when(Born_Alive == "1" & Percential_weight.GA_2 == "Normal" & Birth_weight_cat == "Normal Weight" & GA_birth_binary == "Term" ~ "Healthy", Born_Alive == "1" & SVN == "SVN" ~ "SVN", .default = "Other"))
+
+```
+
+```{r Maternal Serology data frame}
+
+Maternal_serology_inflammation <- select(sample_data, Sample.ID, CRP_mg.L, Alpha1_AGP_ng.ml, calprotectin_ug.g, Ferritin_ng.ml, RBP4_ng.ml, Angiotensing_1_7_pg.ml, Angiotensin_II_pg.ml, inflammation_AGP_cat, inflammation_CRP_cat,inflammation) %>% 
+  mutate(inflammation_calprotectin_cat = case_when(calprotectin_ug.g >= 50 ~ "Elevated Calprotectin", calprotectin_ug.g < 50 ~ "Normal Calprotectin")) %>%
+  select(-calprotectin_ug.g)
+#50 micrograms/gram as the cut off for normal/elevated calprotectin
+
+```
+
+```{r child info}
+
+child <- select(sample_data, Sample.ID, Twins, Sex) %>% mutate(Sex = factor(Sex))
+
+```
+
+```{r cofactors}
+#making sure each variable is considered as a "factor"
+cofactors <- select(sample_data, Sample.ID, Maternal_age_cat, Maternal_education_cat, Parity_cat, Wealth_index, BMI_cat) %>% 
+  mutate(Maternal_age_cat = factor(Maternal_age_cat, levels = c("<18", "18-35", ">35"))) %>% 
+  mutate(Maternal_education_cat = factor(Maternal_education_cat, levels = c("No Education", "1-5", "6-10", ">10"))) %>% 
+  mutate(Parity_cat = factor(Parity_cat, levels = c("0", "1-2", ">2"))) %>% 
+  mutate(Wealth_index = factor(Wealth_index, levels = c("Poorest", "Poorer", "middle", "Ricehest", "Richer"))) %>% 
+  mutate(BMI_cat = factor(BMI_cat, levels = c("Underweight", "Healthy Weight", "Overweight", "Obese")))
+
+
+```
+
+## Analysis
+
+```{r regression SVN}
+#combining data frames
+regression_dataframe <- full_join(Birth_outcomes, Maternal_serology_inflammation) %>% 
+  full_join(cofactors) %>% 
+  full_join(child)
+nrow(regression_dataframe) #237
+
+#filtering out twins
+regression_dataframe <- regression_dataframe %>% 
+  filter(Twins == 2)
+nrow(regression_dataframe) #235
+
+#SVN
+regression_dataframe_2 <- regression_dataframe %>%
+  filter(Single_outcome_SVN == "Healthy" | Single_outcome_SVN == "SVN") %>% 
+  mutate(Single_outcome_SVN = ifelse(Single_outcome_SVN == "SVN", 1, 0)) %>% 
+  mutate(inflammation_AGP_cat = factor(inflammation_AGP_cat, levels = c("Normal AGP", "Elevated AGP")))%>% 
+  mutate(inflammation_calprotectin_cat = factor(inflammation_calprotectin_cat, levels = c("Normal Calprotectin", "Elevated Calprotectin")))
+
+nrow(regression_dataframe_2) #213
+
+
+table(regression_dataframe_2$inflammation_AGP_cat, regression_dataframe_2$Single_outcome_SVN)
+table(regression_dataframe_2$Single_outcome_SVN)
+
+
+#modeling SVN with cofactors and AGP
+Model_SVN <- glm(Single_outcome_SVN ~ inflammation_AGP_cat + Maternal_age_cat + Maternal_education_cat + Parity_cat + Wealth_index + BMI_cat + Sex, data = regression_dataframe_2, family = binomial)
+summary(Model_SVN)
+exp(coef(Model_SVN))
+confint(Model_SVN)
+exp(confint(Model_SVN))
+
+
+#Model_SVN_2 <- glm(Single_outcome_SVN ~ inflammation_AGP_cat, data = regression_dataframe_2, family = binomial)
+#summary(Model_SVN_2)
+#exp(coef(Model_SVN_2))
+#confint(Model_SVN_2)
+#exp(confint(Model_SVN_2))
+
+#modeling SVN with cofactors and calprotectin
+Model_SVN_3 <- glm(Single_outcome_SVN ~ inflammation_calprotectin_cat + Maternal_age_cat + Maternal_education_cat + Parity_cat + Wealth_index + BMI_cat + Sex, data = regression_dataframe_2, family = binomial)
+summary(Model_SVN_3)
+exp(coef(Model_SVN_3))
+confint(Model_SVN_3)
+exp(confint(Model_SVN_3))
+
+```
+
+
+
+
+
+
