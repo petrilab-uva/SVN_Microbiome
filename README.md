@@ -5,7 +5,7 @@ Repository for analysis of Bangladeshi samples from first-trimester pregnant wom
 
 ## Paper: 
 
-McMillan et al. First-trimester maternal gut microbiome and small vulnerable newborns: a prospective cohort study. 2026. BJOG
+McMillan et al. First-trimester maternal gut microbiome and small vulnerable newborns: a prospective cohort study. 2026. BJOG. Access at: http://doi.org/10.1111/1471-0528.70356
 
 
 Preprint: McMillan, R. et al. The first-trimester maternal gut microbiome is a predictor of the birth of small vulnerable newborns in rural Bangladesh: A prospective cohort study. Preprint at https://doi.org/10.22541/au.176644102.26742975/v1 (2025).
